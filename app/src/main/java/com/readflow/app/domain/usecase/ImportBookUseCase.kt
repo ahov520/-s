@@ -108,7 +108,7 @@ class ImportBookUseCase @Inject constructor(
             requestMethod = "GET"
         }
 
-        try {
+        return try {
             if (connection.responseCode !in 200..299) return null
             val body = connection.inputStream.bufferedReader().use { it.readText() }
             val docs = JSONObject(body).optJSONArray("docs") ?: return null
