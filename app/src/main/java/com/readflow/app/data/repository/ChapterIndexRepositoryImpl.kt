@@ -15,10 +15,23 @@ class ChapterIndexRepositoryImpl @Inject constructor(
     override fun observeChapters(bookId: String): Flow<List<ChapterIndex>> =
         chapterIndexDao.observeByBook(bookId).map { entities -> entities.map { it.toDomain() } }
 
+    override suspend fun getAllChapters(): List<ChapterIndex> = chapterIndexDao.getAll().map { it.toDomain() }
+
     override suspend fun replaceChapters(bookId: String, chapters: List<ChapterIndex>) {
         chapterIndexDao.deleteByBookId(bookId)
         if (chapters.isNotEmpty()) {
             chapterIndexDao.insertAll(chapters.map { it.toEntity() })
         }
+    }
+
+    override suspend fun replaceAllChapters(chapters: List<ChapterIndex>) {
+        chapterIndexDao.deleteAll()
+        if (chapters.isNotEmpty()) {
+            chapterIndexDao.insertAll(chapters.map { it.toEntity() })
+        }
+    }
+
+    override suspend fun deleteAllChapters() {
+        chapterIndexDao.deleteAll()
     }
 }

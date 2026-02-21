@@ -37,6 +37,7 @@ fun ImmersiveSheet(
     onTtsProviderChange: (TtsProvider) -> Unit,
     onTtsRateChange: (Float) -> Unit,
     onTtsPitchChange: (Float) -> Unit,
+    onBackgroundTtsEnabledChange: (Boolean) -> Unit,
     onAutoPageEnabledChange: (Boolean) -> Unit,
     onAutoPageIntervalChange: (Int) -> Unit,
     onToggleFocusTimer: () -> Unit,
@@ -91,6 +92,11 @@ fun ImmersiveSheet(
                 value = settings.ttsPitch,
                 onValueChange = onTtsPitchChange,
                 valueRange = 0.5f..2.0f,
+            )
+            ToggleRow(
+                label = "后台听书",
+                checked = settings.backgroundTtsEnabled,
+                onCheckedChange = onBackgroundTtsEnabledChange,
             )
 
             ToggleRow(

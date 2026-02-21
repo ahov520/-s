@@ -44,6 +44,7 @@ import com.readflow.app.ui.reader.components.BookmarkSheet
 import com.readflow.app.ui.reader.components.ChapterListSheet
 import com.readflow.app.ui.reader.components.ImmersiveSheet
 import com.readflow.app.ui.reader.components.PageReader
+import com.readflow.app.ui.reader.components.ReadingNotesSheet
 import com.readflow.app.ui.reader.components.ReaderToolbar
 import com.readflow.app.ui.reader.components.SearchSheet
 import com.readflow.app.ui.reader.components.ScrollReader
@@ -59,6 +60,7 @@ fun ReaderScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
     var showBookmarks by remember { mutableStateOf(false) }
+    var showNotes by remember { mutableStateOf(false) }
     var showChapters by remember { mutableStateOf(false) }
     var showImmersive by remember { mutableStateOf(false) }
     val activity = LocalContext.current.findActivity()
@@ -212,6 +214,7 @@ fun ReaderScreen(
             onShowBookmarks = { showBookmarks = true },
             onShowChapters = { showChapters = true },
             onShowSearch = viewModel::showSearchPanel,
+            onShowNotes = { showNotes = true },
             onShowSettings = { showSettings = true },
             onShowImmersive = { showImmersive = true },
             onProgressChange = { ratio ->
@@ -266,6 +269,19 @@ fun ReaderScreen(
         )
     }
 
+    if (showNotes) {
+        ReadingNotesSheet(
+            notes = state.readingNotes,
+            onDismiss = { showNotes = false },
+            onAddNote = viewModel::addReadingNote,
+            onDeleteNote = viewModel::deleteReadingNote,
+            onJumpToNote = {
+                viewModel.jumpToReadingNote(it)
+                showNotes = false
+            },
+        )
+    }
+
     if (showChapters) {
         ChapterListSheet(
             chapters = state.chapters,
@@ -308,6 +324,7 @@ fun ReaderScreen(
             onTtsProviderChange = viewModel::updateTtsProvider,
             onTtsRateChange = viewModel::updateTtsRate,
             onTtsPitchChange = viewModel::updateTtsPitch,
+            onBackgroundTtsEnabledChange = viewModel::updateBackgroundTtsEnabled,
             onAutoPageEnabledChange = viewModel::updateAutoPageEnabled,
             onAutoPageIntervalChange = viewModel::updateAutoPageIntervalMs,
             onToggleFocusTimer = viewModel::toggleFocusTimer,

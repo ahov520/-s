@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -50,6 +51,7 @@ fun ReaderToolbar(
     onShowBookmarks: () -> Unit,
     onShowChapters: () -> Unit,
     onShowSearch: () -> Unit,
+    onShowNotes: () -> Unit,
     onShowSettings: () -> Unit,
     onShowImmersive: () -> Unit,
     onProgressChange: (Float) -> Unit,
@@ -126,6 +128,11 @@ fun ReaderToolbar(
                             icon = Icons.Default.Search,
                             label = "搜索",
                             onClick = onShowSearch,
+                        )
+                        ActionPill(
+                            icon = Icons.Default.EditNote,
+                            label = "笔记",
+                            onClick = onShowNotes,
                         )
                         ActionPill(
                             icon = Icons.Default.Settings,

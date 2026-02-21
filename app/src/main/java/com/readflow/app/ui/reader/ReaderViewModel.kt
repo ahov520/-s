@@ -1,12 +1,15 @@
 package com.readflow.app.ui.reader
 
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.readflow.app.domain.model.Book
 import com.readflow.app.domain.model.Bookmark
 import com.readflow.app.domain.model.ChapterIndex
 import com.readflow.app.domain.model.PageMode
+import com.readflow.app.domain.model.ReadingNote
 import com.readflow.app.domain.model.ReadingSettings
 import com.readflow.app.domain.model.TtsProvider
 import com.readflow.app.domain.model.ThemeMode
@@ -20,6 +23,8 @@ import com.readflow.app.domain.usecase.IndexChaptersUseCase
 import com.readflow.app.domain.usecase.PaginateContentUseCase
 import com.readflow.app.domain.usecase.PaginationLayout
 import com.readflow.app.domain.usecase.SearchInTextUseCase
+import com.readflow.app.service.BackgroundAudioService
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -68,6 +73,7 @@ data class ReaderUiState(
     val searchQuery: String = "",
     val searchResults: List<SearchResultUi> = emptyList(),
     val searchTruncated: Boolean = false,
+    val readingNotes: List<ReadingNote> = emptyList(),
     val ttsState: TtsPlaybackState = TtsPlaybackState.IDLE,
     val focusSessionSeconds: Int = 0,
     val isFocusTimerRunning: Boolean = false,
@@ -112,6 +118,7 @@ class ReaderViewModel @Inject constructor(
                 if (state != TtsPlaybackState.SPEAKING) {
                     viewModelScope.launch { settingsRepository.updateAutoPageEnabled(false) }
                 }
+                syncBackgroundPlayback(state)
                 ensureAutoPageLoop()
             },
             onProgress = { absolute ->
@@ -137,13 +144,20 @@ class ReaderViewModel @Inject constructor(
         settingsJob = viewModelScope.launch {
             settingsRepository.observeSettings().collect { settings ->
                 _uiState.update { state ->
+                    val notes = settings.readingNotes
+                        .asSequence()
+                        .filter { it.bookId == currentBookId }
+                        .sortedByDescending { it.createdAt }
+                        .toList()
                     state.copy(
                         settings = settings,
                         isMistouchLocked = if (settings.mistouchGuardEnabled) state.isMistouchLocked else false,
+                        readingNotes = notes,
                     )
                 }
                 ttsController?.setRate(settings.ttsRate)
                 ttsController?.setPitch(settings.ttsPitch)
+                syncBackgroundPlayback()
                 recalculatePagination()
                 ensureAutoPageLoop()
             }
@@ -369,6 +383,11 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch { settingsRepository.updateTtsPitch(value) }
     }
 
+    fun updateBackgroundTtsEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.updateBackgroundTtsEnabled(enabled) }
+        syncBackgroundPlayback()
+    }
+
     fun updateAutoPageEnabled(enabled: Boolean) {
         val speaking = _uiState.value.ttsState == TtsPlaybackState.SPEAKING
         if (speaking && !enabled) {
@@ -417,6 +436,35 @@ class ReaderViewModel @Inject constructor(
 
     fun resetFocusSession() {
         _uiState.update { it.copy(focusSessionSeconds = 0) }
+    }
+
+    fun addReadingNote(noteText: String) {
+        val state = _uiState.value
+        val bookId = currentBookId ?: return
+        if (state.content.isBlank()) return
+        val note = noteText.trim()
+        if (note.isBlank()) return
+        val start = state.currentPosition.coerceAtLeast(0)
+        val end = (start + 160).coerceAtMost(state.content.length)
+        val quote = state.content.substring(start, end).trim().ifBlank { "当前位置片段" }
+        val item = ReadingNote(
+            id = UUID.randomUUID().toString(),
+            bookId = bookId,
+            startChar = start,
+            endChar = end,
+            quote = quote,
+            note = note,
+            createdAt = System.currentTimeMillis(),
+        )
+        viewModelScope.launch { settingsRepository.upsertReadingNote(item) }
+    }
+
+    fun deleteReadingNote(noteId: String) {
+        viewModelScope.launch { settingsRepository.deleteReadingNote(noteId) }
+    }
+
+    fun jumpToReadingNote(note: ReadingNote) {
+        jumpToPosition(note.startChar)
     }
 
     fun onAppBackgrounded() {
@@ -574,6 +622,24 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch { flushPendingReadStats() }
     }
 
+    private fun syncBackgroundPlayback(forcedState: TtsPlaybackState? = null) {
+        val state = _uiState.value
+        val playbackState = forcedState ?: state.ttsState
+        val shouldRun = state.settings.backgroundTtsEnabled && playbackState == TtsPlaybackState.SPEAKING
+        if (shouldRun) {
+            val intent = Intent(appContext, BackgroundAudioService::class.java).apply {
+                putExtra(BackgroundAudioService.EXTRA_TITLE, state.book?.title ?: "后台听书中")
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(appContext, intent)
+            } else {
+                appContext.startService(intent)
+            }
+        } else {
+            appContext.stopService(Intent(appContext, BackgroundAudioService::class.java))
+        }
+    }
+
     private suspend fun executeSearch(query: String) {
         val state = _uiState.value
         if (state.content.isBlank()) return
@@ -612,6 +678,7 @@ class ReaderViewModel @Inject constructor(
         focusTimerJob?.cancel()
         _uiState.update { it.copy(isFocusTimerRunning = false) }
         runCatching { runBlocking { flushPendingReadStats() } }
+        runCatching { syncBackgroundPlayback(TtsPlaybackState.IDLE) }
         autoPageJob?.cancel()
         ttsController?.shutdown()
         super.onCleared()

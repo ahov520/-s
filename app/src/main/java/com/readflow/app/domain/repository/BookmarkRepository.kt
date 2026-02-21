@@ -5,6 +5,9 @@ import kotlinx.coroutines.flow.Flow
 
 interface BookmarkRepository {
     fun observeBookmarks(bookId: String): Flow<List<Bookmark>>
+    suspend fun getAllBookmarks(): List<Bookmark>
     suspend fun addBookmark(bookmark: Bookmark)
+    suspend fun addBookmarks(bookmarks: List<Bookmark>)
     suspend fun deleteBookmark(bookmarkId: String)
+    suspend fun deleteAllBookmarks()
 }

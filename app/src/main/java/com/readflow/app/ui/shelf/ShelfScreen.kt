@@ -42,9 +42,11 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,6 +70,9 @@ import com.readflow.app.ui.theme.ZenithAccent
 import com.readflow.app.ui.theme.ZenithAccentSoft
 import com.readflow.app.ui.theme.ZenithBackground
 import coil.compose.AsyncImage
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 enum class ShelfTab {
     LIBRARY,
@@ -81,10 +86,11 @@ fun ShelfScreen(
     viewModel: ShelfViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var pendingDelete by remember { mutableStateOf<Book?>(null) }
+    var pendingBookAction by remember { mutableStateOf<Book?>(null) }
     var activeTab by rememberSaveable { mutableStateOf(ShelfTab.LIBRARY) }
     var isSearching by rememberSaveable { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
+    var libraryGroupFilter by rememberSaveable { mutableStateOf("全部") }
     var discoverCategory by rememberSaveable { mutableStateOf("全部") }
     var showDiscoverFilter by rememberSaveable { mutableStateOf(false) }
 
@@ -114,13 +120,16 @@ fun ShelfScreen(
             when (activeTab) {
                 ShelfTab.LIBRARY -> LibraryTab(
                     books = uiState.books,
+                    bookGroups = uiState.bookGroups,
                     isSearching = isSearching,
                     searchQuery = searchQuery,
+                    selectedGroup = libraryGroupFilter,
+                    onGroupSelected = { libraryGroupFilter = it },
                     onSearchModeChange = { isSearching = it },
                     onSearchQueryChange = { searchQuery = it },
                     onImport = { launcher.launch(arrayOf("text/plain", "text/*")) },
                     onOpenBook = { onOpenReader(it.id) },
-                    onLongPressBook = { pendingDelete = it },
+                    onLongPressBook = { pendingBookAction = it },
                 )
 
                 ShelfTab.DISCOVER -> DiscoverTab(
@@ -139,33 +148,80 @@ fun ShelfScreen(
                     books = uiState.books,
                     dailyReadSeconds = uiState.dailyReadSeconds,
                     streakDays = uiState.streakDays,
+                    dailyGoalMinutes = uiState.dailyGoalMinutes,
+                    reminderEnabled = uiState.reminderEnabled,
+                    reminderHour = uiState.reminderHour,
+                    reminderMinute = uiState.reminderMinute,
+                    notesCount = uiState.notesCount,
+                    cloudSyncToken = uiState.cloudSyncToken,
+                    cloudGistId = uiState.cloudGistId,
+                    lastBackupPath = uiState.lastBackupPath,
+                    lastSyncAt = uiState.lastSyncAt,
                     onImport = { launcher.launch(arrayOf("text/plain", "text/*")) },
+                    onGoalChange = viewModel::updateDailyGoalMinutes,
+                    onReminderChange = viewModel::updateReminder,
+                    onCloudConfigChange = viewModel::updateCloudSyncConfig,
+                    onBackupLocal = viewModel::backupToLocal,
+                    onRestoreLocal = viewModel::restoreFromLocalBackup,
+                    onSyncUp = viewModel::syncToCloud,
+                    onSyncDown = viewModel::restoreFromCloud,
                 )
             }
 
-            if (uiState.isImporting) {
+            if (uiState.isImporting || uiState.isWorking) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             }
         }
 
-        if (pendingDelete != null) {
+        if (uiState.error != null || uiState.message != null) {
             AlertDialog(
-                onDismissRequest = { pendingDelete = null },
-                title = { Text("删除书籍") },
-                text = { Text("确认从书架移除《${pendingDelete?.title}》吗？") },
+                onDismissRequest = { viewModel.clearFeedback() },
+                title = { Text(if (uiState.error != null) "操作失败" else "操作结果") },
+                text = { Text(uiState.error ?: uiState.message.orEmpty()) },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.clearFeedback() }) { Text("知道了") }
+                },
+            )
+        }
+
+        if (pendingBookAction != null) {
+            AlertDialog(
+                onDismissRequest = { pendingBookAction = null },
+                title = { Text("书籍操作") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("《${pendingBookAction?.title}》")
+                        Text("选择分组")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("未分组", "收藏", "追更", "完结").forEach { group ->
+                                FilterChip(
+                                    selected = if (group == "未分组") {
+                                        uiState.bookGroups[pendingBookAction?.id.orEmpty()].isNullOrBlank()
+                                    } else {
+                                        uiState.bookGroups[pendingBookAction?.id.orEmpty()] == group
+                                    },
+                                    onClick = {
+                                        pendingBookAction?.let { viewModel.updateBookGroup(it.id, group) }
+                                    },
+                                    label = { Text(group) },
+                                )
+                            }
+                        }
+                    }
+                },
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            viewModel.deleteBook(pendingDelete!!.id)
-                            pendingDelete = null
+                            pendingBookAction?.let { viewModel.deleteBook(it.id) }
+                            pendingBookAction = null
                         }
                     ) {
                         Text("删除")
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { pendingDelete = null }) {
-                        Text("取消")
+                    TextButton(onClick = { pendingBookAction = null }) {
+                        Text("完成")
                     }
                 }
             )
@@ -187,20 +243,32 @@ fun ShelfScreen(
 @Composable
 private fun LibraryTab(
     books: List<Book>,
+    bookGroups: Map<String, String>,
     isSearching: Boolean,
     searchQuery: String,
+    selectedGroup: String,
+    onGroupSelected: (String) -> Unit,
     onSearchModeChange: (Boolean) -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onImport: () -> Unit,
     onOpenBook: (Book) -> Unit,
     onLongPressBook: (Book) -> Unit,
 ) {
-    val filteredBooks = remember(books, searchQuery) {
-        if (searchQuery.isBlank()) books else books.filter {
-            it.title.contains(searchQuery, ignoreCase = true)
+    val filteredBooks = remember(books, bookGroups, selectedGroup, searchQuery) {
+        books.filter { book ->
+            val matchesGroup = when (selectedGroup) {
+                "全部" -> true
+                "未分组" -> bookGroups[book.id].isNullOrBlank()
+                else -> bookGroups[book.id] == selectedGroup
+            }
+            val matchesSearch = searchQuery.isBlank() || book.title.contains(searchQuery, ignoreCase = true)
+            matchesGroup && matchesSearch
         }
     }
     val continueBook = books.firstOrNull { it.progress in 0.001f..0.999f }
+    val groupOptions = remember(bookGroups) {
+        listOf("全部", "未分组") + bookGroups.values.filter { it.isNotBlank() }.distinct()
+    }
 
     Column(
         modifier = Modifier
@@ -236,6 +304,19 @@ private fun LibraryTab(
             return@Column
         }
 
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            groupOptions.forEach { group ->
+                FilterChip(
+                    selected = selectedGroup == group,
+                    onClick = { onGroupSelected(group) },
+                    label = { Text(group) },
+                )
+            }
+        }
+
         AnimatedVisibility(visible = continueBook != null) {
             continueBook?.let { book ->
                 ContinueReadingCard(book = book, onClick = { onOpenBook(book) })
@@ -247,7 +328,7 @@ private fun LibraryTab(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        GridSection(books = books, onOpenBook = onOpenBook, onLongPressBook = onLongPressBook)
+        GridSection(books = filteredBooks, onOpenBook = onOpenBook, onLongPressBook = onLongPressBook)
         Spacer(modifier = Modifier.height(20.dp))
     }
 }
@@ -374,12 +455,37 @@ private fun ProfileTab(
     books: List<Book>,
     dailyReadSeconds: Int,
     streakDays: Int,
+    dailyGoalMinutes: Int,
+    reminderEnabled: Boolean,
+    reminderHour: Int,
+    reminderMinute: Int,
+    notesCount: Int,
+    cloudSyncToken: String,
+    cloudGistId: String,
+    lastBackupPath: String,
+    lastSyncAt: Long,
     onImport: () -> Unit,
+    onGoalChange: (Int) -> Unit,
+    onReminderChange: (Boolean, Int, Int) -> Unit,
+    onCloudConfigChange: (String, String) -> Unit,
+    onBackupLocal: () -> Unit,
+    onRestoreLocal: () -> Unit,
+    onSyncUp: () -> Unit,
+    onSyncDown: () -> Unit,
 ) {
     val total = books.size
     val reading = books.count { it.progress in 0.001f..0.999f }
     val finished = books.count { it.progress >= 0.999f }
     val latest = books.maxByOrNull { it.updatedAt }?.title ?: "暂无"
+    val goalSeconds = (dailyGoalMinutes.coerceAtLeast(1) * 60)
+    val goalProgress = (dailyReadSeconds.toFloat() / goalSeconds).coerceIn(0f, 1f)
+    var tokenDraft by rememberSaveable { mutableStateOf(cloudSyncToken) }
+    var gistDraft by rememberSaveable { mutableStateOf(cloudGistId) }
+
+    LaunchedEffect(cloudSyncToken, cloudGistId) {
+        tokenDraft = cloudSyncToken
+        gistDraft = cloudGistId
+    }
 
     Column(
         modifier = Modifier
@@ -408,6 +514,30 @@ private fun ProfileTab(
                 Text("已读完成：$finished 本", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("今日阅读：${formatReadingDuration(dailyReadSeconds)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("连续阅读：$streakDays 天", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("今日目标：$dailyGoalMinutes 分钟（${(goalProgress * 100).toInt()}%）", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color(0xFFE9EDF5))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(goalProgress)
+                            .height(8.dp)
+                            .background(ZenithAccent)
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(30, 60, 90, 120).forEach { candidate ->
+                        FilterChip(
+                            selected = dailyGoalMinutes == candidate,
+                            onClick = { onGoalChange(candidate) },
+                            label = { Text("${candidate}分") },
+                        )
+                    }
+                }
                 Text("最近更新：$latest", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -434,6 +564,96 @@ private fun ProfileTab(
                 Text(
                     text = "说明：长按书籍可删除，阅读页可添加书签与切换主题。",
                     style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = Color.White,
+            shadowElevation = 4.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("提醒与统计", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("每日提醒（${reminderHour.toString().padStart(2, '0')}:${reminderMinute.toString().padStart(2, '0')}）")
+                    Switch(
+                        checked = reminderEnabled,
+                        onCheckedChange = { onReminderChange(it, reminderHour, reminderMinute) },
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(8, 12, 18, 21).forEach { hour ->
+                        FilterChip(
+                            selected = reminderHour == hour,
+                            onClick = { onReminderChange(reminderEnabled, hour, 0) },
+                            label = { Text("${hour}:00") },
+                        )
+                    }
+                }
+                Text("累计笔记：$notesCount 条", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = Color.White,
+            shadowElevation = 4.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("备份与云同步", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                OutlinedTextField(
+                    value = tokenDraft,
+                    onValueChange = { tokenDraft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("GitHub Token") },
+                )
+                OutlinedTextField(
+                    value = gistDraft,
+                    onValueChange = { gistDraft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("Gist ID（首次可留空）") },
+                )
+                Text(
+                    text = "保存云配置",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onCloudConfigChange(tokenDraft, gistDraft) }
+                        .background(ZenithAccentSoft)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ActionTextButton(text = "本地备份", onClick = onBackupLocal, modifier = Modifier.weight(1f))
+                    ActionTextButton(text = "本地恢复", onClick = onRestoreLocal, modifier = Modifier.weight(1f))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ActionTextButton(text = "上传云端", onClick = onSyncUp, modifier = Modifier.weight(1f))
+                    ActionTextButton(text = "云端恢复", onClick = onSyncDown, modifier = Modifier.weight(1f))
+                }
+                Text(
+                    text = "最近备份：${if (lastBackupPath.isBlank()) "暂无" else lastBackupPath}",
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "最近云同步：${formatSyncTime(lastSyncAt)}",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -844,6 +1064,28 @@ private fun BottomNavItem(
         }
         Text(text = label, color = color, style = MaterialTheme.typography.labelMedium)
     }
+}
+
+@Composable
+private fun ActionTextButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = text,
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onClick() }
+            .background(ZenithAccentSoft)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    )
+}
+
+private fun formatSyncTime(epochMillis: Long): String {
+    if (epochMillis <= 0L) return "暂无"
+    val formatter = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+    return formatter.format(Date(epochMillis))
 }
 
 private fun formatReadingDuration(seconds: Int): String {

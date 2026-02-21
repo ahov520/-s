@@ -12,9 +12,15 @@ interface ChapterIndexDao {
     @Query("SELECT * FROM chapter_indices WHERE book_id = :bookId ORDER BY chapter_order ASC")
     fun observeByBook(bookId: String): Flow<List<ChapterIndexEntity>>
 
+    @Query("SELECT * FROM chapter_indices ORDER BY book_id, chapter_order ASC")
+    suspend fun getAll(): List<ChapterIndexEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(chapters: List<ChapterIndexEntity>)
 
     @Query("DELETE FROM chapter_indices WHERE book_id = :bookId")
     suspend fun deleteByBookId(bookId: String)
+
+    @Query("DELETE FROM chapter_indices")
+    suspend fun deleteAll()
 }
