@@ -1,6 +1,8 @@
 package com.readflow.app.domain.usecase
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import com.readflow.app.domain.model.Book
 import com.readflow.app.domain.model.Bookmark
 import com.readflow.app.domain.model.ChapterIndex
@@ -19,6 +21,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -31,6 +34,11 @@ class BackupAndSyncUseCase @Inject constructor(
     private val chapterIndexRepository: ChapterIndexRepository,
     private val settingsRepository: ReaderSettingsRepository,
 ) {
+    enum class RestoreMode {
+        MERGE,
+        OVERWRITE,
+    }
+
     suspend fun createLocalBackup(): Result<String> = runCatching {
         withContext(Dispatchers.IO) {
             val payload = buildBackupPayload()
@@ -42,13 +50,16 @@ class BackupAndSyncUseCase @Inject constructor(
         }
     }
 
-    suspend fun restoreFromLocalBackup(path: String? = null): Result<String> = runCatching {
+    suspend fun restoreFromLocalBackup(
+        path: String? = null,
+        mode: RestoreMode = RestoreMode.MERGE,
+    ): Result<String> = runCatching {
         withContext(Dispatchers.IO) {
             val resolved = resolveBackupPath(path)
             val file = File(resolved)
             if (!file.exists()) error("备份文件不存在")
             val payload = file.readText(Charsets.UTF_8)
-            restoreBackupPayload(payload)
+            restoreBackupPayload(payload, mode)
             settingsRepository.updateLastBackupPath(file.absolutePath)
             file.absolutePath
         }
@@ -56,6 +67,7 @@ class BackupAndSyncUseCase @Inject constructor(
 
     suspend fun uploadToCloud(): Result<String> = runCatching {
         withContext(Dispatchers.IO) {
+            ensureNetworkAvailable()
             val settings = settingsRepository.observeSettings().first()
             val token = settings.cloudSyncToken.trim()
             if (token.isBlank()) error("请先填写 GitHub Token")
@@ -73,14 +85,15 @@ class BackupAndSyncUseCase @Inject constructor(
         }
     }
 
-    suspend fun restoreFromCloud(): Result<String> = runCatching {
+    suspend fun restoreFromCloud(mode: RestoreMode = RestoreMode.MERGE): Result<String> = runCatching {
         withContext(Dispatchers.IO) {
+            ensureNetworkAvailable()
             val settings = settingsRepository.observeSettings().first()
             val token = settings.cloudSyncToken.trim()
             val gistId = settings.cloudGistId.trim()
             if (token.isBlank() || gistId.isBlank()) error("请先填写 GitHub Token 和 Gist ID")
             val payload = fetchBackupGistContent(token, gistId)
-            restoreBackupPayload(payload)
+            restoreBackupPayload(payload, mode)
             settingsRepository.updateLastSyncAt(System.currentTimeMillis())
             gistId
         }
@@ -130,55 +143,32 @@ class BackupAndSyncUseCase @Inject constructor(
         return root.toString()
     }
 
-    private suspend fun restoreBackupPayload(payload: String) {
+    private suspend fun restoreBackupPayload(payload: String, mode: RestoreMode) {
         val root = JSONObject(payload)
         val books = root.optJSONArray("books").toBooks()
         val bookmarks = root.optJSONArray("bookmarks").toBookmarks()
         val chapters = root.optJSONArray("chapters").toChapters()
+        if (mode == RestoreMode.OVERWRITE) {
+            bookRepository.deleteAllBooks()
+            if (books.isNotEmpty()) bookRepository.upsertBooks(books)
 
-        bookRepository.deleteAllBooks()
-        if (books.isNotEmpty()) bookRepository.upsertBooks(books)
+            bookmarkRepository.deleteAllBookmarks()
+            if (bookmarks.isNotEmpty()) bookmarkRepository.addBookmarks(bookmarks)
 
-        bookmarkRepository.deleteAllBookmarks()
-        if (bookmarks.isNotEmpty()) bookmarkRepository.addBookmarks(bookmarks)
+            chapterIndexRepository.deleteAllChapters()
+            if (chapters.isNotEmpty()) chapterIndexRepository.replaceAllChapters(chapters)
+        } else {
+            val mergedBooks = mergeBooksById(bookRepository.getAllBooks(), books)
+            val mergedBookmarks = mergeBookmarksById(bookmarkRepository.getAllBookmarks(), bookmarks)
+            val mergedChapters = mergeChaptersById(chapterIndexRepository.getAllChapters(), chapters)
 
-        chapterIndexRepository.deleteAllChapters()
-        if (chapters.isNotEmpty()) chapterIndexRepository.replaceAllChapters(chapters)
+            if (mergedBooks.isNotEmpty()) bookRepository.upsertBooks(mergedBooks)
+            if (mergedBookmarks.isNotEmpty()) bookmarkRepository.addBookmarks(mergedBookmarks)
+            if (mergedChapters.isNotEmpty()) chapterIndexRepository.replaceAllChapters(mergedChapters)
+        }
 
-        val settings = root.optJSONObject("settings") ?: JSONObject()
-        settingsRepository.updateFontSize(settings.optInt("fontSize", 18))
-        settingsRepository.updateLineHeight(settings.optDouble("lineHeight", 1.6).toFloat())
-        settingsRepository.updateBgColor(settings.optString("bgColorKey", "paper-sepia"))
-        settingsRepository.updateThemeMode(settings.optString("themeMode").toThemeMode())
-        settingsRepository.updatePageMode(settings.optString("pageMode").toPageMode())
-        settingsRepository.updateTtsProvider(settings.optString("ttsProvider").toTtsProvider())
-        settingsRepository.updateTtsRate(settings.optDouble("ttsRate", 1.0).toFloat())
-        settingsRepository.updateTtsPitch(settings.optDouble("ttsPitch", 1.0).toFloat())
-        settingsRepository.updateTtsVoiceId(settings.optString("ttsVoiceId"))
-        settingsRepository.updateBackgroundTtsEnabled(settings.optBoolean("backgroundTtsEnabled", true))
-        settingsRepository.updateAutoPageEnabled(settings.optBoolean("autoPageEnabled", false))
-        settingsRepository.updateAutoPageIntervalMs(settings.optInt("autoPageIntervalMs", 3500))
-        settingsRepository.updateImmersiveEnabled(settings.optBoolean("immersiveEnabled", false))
-        settingsRepository.updateBrightnessLocked(settings.optBoolean("brightnessLocked", false))
-        settingsRepository.updateMistouchGuardEnabled(settings.optBoolean("mistouchGuardEnabled", false))
-        settingsRepository.replaceReadStats(
-            dailyReadSeconds = settings.optInt("dailyReadSeconds", 0),
-            lastReadDate = settings.optString("lastReadDate"),
-            streakDays = settings.optInt("streakDays", 0),
-        )
-        settingsRepository.updateDailyGoalMinutes(settings.optInt("dailyGoalMinutes", 60))
-        settingsRepository.updateReminder(
-            enabled = settings.optBoolean("reminderEnabled", false),
-            hour = settings.optInt("reminderHour", 21),
-            minute = settings.optInt("reminderMinute", 0),
-        )
-        settingsRepository.replaceBookGroups(settings.optJSONObject("bookGroups").toBookGroups())
-        settingsRepository.replaceReadingNotes(settings.optJSONArray("readingNotes").toReadingNotes())
-        settingsRepository.updateCloudSyncConfig(
-            token = settingsRepository.observeSettings().first().cloudSyncToken,
-            gistId = settings.optString("cloudGistId"),
-        )
-        settingsRepository.updateLastBackupPath(settings.optString("lastBackupPath"))
+        val settingsJson = root.optJSONObject("settings") ?: JSONObject()
+        applySettingsFromBackup(settingsJson, mode)
     }
 
     private suspend fun resolveBackupPath(path: String?): String {
@@ -190,7 +180,63 @@ class BackupAndSyncUseCase @Inject constructor(
         return latest?.absolutePath ?: error("没有可恢复的本地备份")
     }
 
-    private fun createBackupGist(token: String, payload: String): String {
+    private suspend fun applySettingsFromBackup(
+        settings: JSONObject,
+        mode: RestoreMode,
+    ) {
+        if (mode == RestoreMode.OVERWRITE) {
+            settingsRepository.updateFontSize(settings.optInt("fontSize", 18))
+            settingsRepository.updateLineHeight(settings.optDouble("lineHeight", 1.6).toFloat())
+            settingsRepository.updateBgColor(settings.optString("bgColorKey", "paper-sepia"))
+            settingsRepository.updateThemeMode(settings.optString("themeMode").toThemeMode())
+            settingsRepository.updatePageMode(settings.optString("pageMode").toPageMode())
+            settingsRepository.updateTtsProvider(settings.optString("ttsProvider").toTtsProvider())
+            settingsRepository.updateTtsRate(settings.optDouble("ttsRate", 1.0).toFloat())
+            settingsRepository.updateTtsPitch(settings.optDouble("ttsPitch", 1.0).toFloat())
+            settingsRepository.updateTtsVoiceId(settings.optString("ttsVoiceId"))
+            settingsRepository.updateBackgroundTtsEnabled(settings.optBoolean("backgroundTtsEnabled", true))
+            settingsRepository.updateAutoPageEnabled(settings.optBoolean("autoPageEnabled", false))
+            settingsRepository.updateAutoPageIntervalMs(settings.optInt("autoPageIntervalMs", 3500))
+            settingsRepository.updateImmersiveEnabled(settings.optBoolean("immersiveEnabled", false))
+            settingsRepository.updateBrightnessLocked(settings.optBoolean("brightnessLocked", false))
+            settingsRepository.updateMistouchGuardEnabled(settings.optBoolean("mistouchGuardEnabled", false))
+            settingsRepository.replaceReadStats(
+                dailyReadSeconds = settings.optInt("dailyReadSeconds", 0),
+                lastReadDate = settings.optString("lastReadDate"),
+                streakDays = settings.optInt("streakDays", 0),
+            )
+            settingsRepository.updateDailyGoalMinutes(settings.optInt("dailyGoalMinutes", 60))
+            settingsRepository.updateReminder(
+                enabled = settings.optBoolean("reminderEnabled", false),
+                hour = settings.optInt("reminderHour", 21),
+                minute = settings.optInt("reminderMinute", 0),
+            )
+            settingsRepository.replaceBookGroups(settings.optJSONObject("bookGroups").toBookGroups())
+            settingsRepository.replaceReadingNotes(settings.optJSONArray("readingNotes").toReadingNotes())
+        } else {
+            val current = settingsRepository.observeSettings().first()
+            val mergedGroups = mergeBookGroups(current.bookGroups, settings.optJSONObject("bookGroups").toBookGroups())
+            val mergedNotes = mergeReadingNotes(current.readingNotes, settings.optJSONArray("readingNotes").toReadingNotes())
+            settingsRepository.replaceBookGroups(mergedGroups)
+            settingsRepository.replaceReadingNotes(mergedNotes)
+        }
+
+        val currentSettings = settingsRepository.observeSettings().first()
+        val currentToken = currentSettings.cloudSyncToken
+        val backupGistId = settings.optString("cloudGistId")
+        val gistToSave = if (mode == RestoreMode.OVERWRITE || backupGistId.isNotBlank()) {
+            backupGistId
+        } else {
+            currentSettings.cloudGistId
+        }
+        settingsRepository.updateCloudSyncConfig(
+            token = currentToken,
+            gistId = gistToSave,
+        )
+        settingsRepository.updateLastBackupPath(settings.optString("lastBackupPath"))
+    }
+
+    private suspend fun createBackupGist(token: String, payload: String): String {
         val body = JSONObject()
             .put("description", "ReadFlow 云备份")
             .put("public", false)
@@ -210,7 +256,7 @@ class BackupAndSyncUseCase @Inject constructor(
         return JSONObject(response).optString("id").ifBlank { error("创建 Gist 失败") }
     }
 
-    private fun patchBackupGist(token: String, gistId: String, payload: String) {
+    private suspend fun patchBackupGist(token: String, gistId: String, payload: String) {
         val body = JSONObject()
             .put(
                 "files",
@@ -227,7 +273,7 @@ class BackupAndSyncUseCase @Inject constructor(
         )
     }
 
-    private fun fetchBackupGistContent(token: String, gistId: String): String {
+    private suspend fun fetchBackupGistContent(token: String, gistId: String): String {
         val response = requestGitHub(
             method = "GET",
             url = "https://api.github.com/gists/$gistId",
@@ -243,7 +289,22 @@ class BackupAndSyncUseCase @Inject constructor(
         return content
     }
 
-    private fun requestGitHub(method: String, url: String, token: String, body: String?): String {
+    private suspend fun requestGitHub(method: String, url: String, token: String, body: String?): String {
+        var delayMs = 700L
+        repeat(3) { attempt ->
+            val result = runCatching { requestGitHubOnce(method, url, token, body) }
+            if (result.isSuccess) return result.getOrThrow()
+
+            val throwable = result.exceptionOrNull() ?: error("未知错误")
+            val retryable = throwable is RetryableHttpException || throwable is IOException
+            if (!retryable || attempt == 2) throw throwable
+            delay(delayMs)
+            delayMs *= 2
+        }
+        error("网络请求失败")
+    }
+
+    private fun requestGitHubOnce(method: String, url: String, token: String, body: String?): String {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             setRequestProperty("Authorization", "Bearer $token")
@@ -272,10 +333,28 @@ class BackupAndSyncUseCase @Inject constructor(
         conn.disconnect()
 
         if (code !in 200..299) {
+            if (code == 429 || code >= 500) {
+                throw RetryableHttpException(code, payload)
+            }
             throw IOException("GitHub API 失败($code): $payload")
         }
         return payload
     }
+
+    private fun ensureNetworkAvailable() {
+        val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: error("网络服务不可用")
+        val network = manager.activeNetwork ?: error("当前无可用网络")
+        val caps = manager.getNetworkCapabilities(network) ?: error("当前网络不可用")
+        val reachable = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        if (!reachable) error("当前网络不可用，请检查后重试")
+    }
+
+    private class RetryableHttpException(
+        code: Int,
+        payload: String,
+    ) : IOException("可重试的 GitHub API 错误($code): $payload")
 }
 
 private fun List<Book>.toBooksJsonArray(): JSONArray = JSONArray().apply {
@@ -446,6 +525,45 @@ private fun JSONObject?.toBookGroups(): Map<String, String> {
         if (key.isNotBlank() && value.isNotBlank()) out[key] = value
     }
     return out
+}
+
+internal fun mergeBooksById(existing: List<Book>, incoming: List<Book>): List<Book> {
+    val merged = linkedMapOf<String, Book>()
+    existing.forEach { merged[it.id] = it }
+    incoming.forEach { merged[it.id] = it }
+    return merged.values.toList()
+}
+
+internal fun mergeBookmarksById(existing: List<Bookmark>, incoming: List<Bookmark>): List<Bookmark> {
+    val merged = linkedMapOf<String, Bookmark>()
+    existing.forEach { merged[it.id] = it }
+    incoming.forEach { merged[it.id] = it }
+    return merged.values.sortedByDescending { it.createdAt }
+}
+
+internal fun mergeChaptersById(existing: List<ChapterIndex>, incoming: List<ChapterIndex>): List<ChapterIndex> {
+    val merged = linkedMapOf<String, ChapterIndex>()
+    existing.forEach { merged[it.id] = it }
+    incoming.forEach { merged[it.id] = it }
+    return merged.values.sortedWith(compareBy<ChapterIndex> { it.bookId }.thenBy { it.chapterOrder })
+}
+
+internal fun mergeReadingNotes(existing: List<ReadingNote>, incoming: List<ReadingNote>): List<ReadingNote> {
+    val merged = linkedMapOf<String, ReadingNote>()
+    existing.forEach { merged[it.id] = it }
+    incoming.forEach { merged[it.id] = it }
+    return merged.values.sortedByDescending { it.createdAt }
+}
+
+internal fun mergeBookGroups(existing: Map<String, String>, incoming: Map<String, String>): Map<String, String> {
+    if (incoming.isEmpty()) return existing
+    val merged = existing.toMutableMap()
+    incoming.forEach { (bookId, group) ->
+        if (bookId.isNotBlank() && group.isNotBlank()) {
+            merged[bookId] = group
+        }
+    }
+    return merged
 }
 
 private fun String.toThemeMode(): ThemeMode =

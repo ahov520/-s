@@ -31,12 +31,15 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -60,10 +63,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.readflow.app.domain.model.Book
+import com.readflow.app.domain.usecase.BackupAndSyncUseCase
 import com.readflow.app.ui.shelf.components.BookCard
 import com.readflow.app.ui.shelf.components.EmptyState
 import com.readflow.app.ui.theme.ZenithAccent
@@ -157,9 +163,13 @@ fun ShelfScreen(
                     cloudGistId = uiState.cloudGistId,
                     lastBackupPath = uiState.lastBackupPath,
                     lastSyncAt = uiState.lastSyncAt,
+                    restoreMode = uiState.restoreMode,
+                    isWorking = uiState.isWorking,
+                    workLabel = uiState.workLabel,
                     onImport = { launcher.launch(arrayOf("text/plain", "text/*")) },
                     onGoalChange = viewModel::updateDailyGoalMinutes,
                     onReminderChange = viewModel::updateReminder,
+                    onRestoreModeChange = viewModel::updateRestoreMode,
                     onCloudConfigChange = viewModel::updateCloudSyncConfig,
                     onBackupLocal = viewModel::backupToLocal,
                     onRestoreLocal = viewModel::restoreFromLocalBackup,
@@ -464,14 +474,18 @@ private fun ProfileTab(
     cloudGistId: String,
     lastBackupPath: String,
     lastSyncAt: Long,
+    restoreMode: BackupAndSyncUseCase.RestoreMode,
+    isWorking: Boolean,
+    workLabel: String?,
     onImport: () -> Unit,
     onGoalChange: (Int) -> Unit,
     onReminderChange: (Boolean, Int, Int) -> Unit,
+    onRestoreModeChange: (BackupAndSyncUseCase.RestoreMode) -> Unit,
     onCloudConfigChange: (String, String) -> Unit,
     onBackupLocal: () -> Unit,
-    onRestoreLocal: () -> Unit,
+    onRestoreLocal: (BackupAndSyncUseCase.RestoreMode) -> Unit,
     onSyncUp: () -> Unit,
-    onSyncDown: () -> Unit,
+    onSyncDown: (BackupAndSyncUseCase.RestoreMode) -> Unit,
 ) {
     val total = books.size
     val reading = books.count { it.progress in 0.001f..0.999f }
@@ -481,6 +495,7 @@ private fun ProfileTab(
     val goalProgress = (dailyReadSeconds.toFloat() / goalSeconds).coerceIn(0f, 1f)
     var tokenDraft by rememberSaveable { mutableStateOf(cloudSyncToken) }
     var gistDraft by rememberSaveable { mutableStateOf(cloudGistId) }
+    var showToken by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(cloudSyncToken, cloudGistId) {
         tokenDraft = cloudSyncToken
@@ -613,12 +628,33 @@ private fun ProfileTab(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text("备份与云同步", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = restoreMode == BackupAndSyncUseCase.RestoreMode.MERGE,
+                        onClick = { onRestoreModeChange(BackupAndSyncUseCase.RestoreMode.MERGE) },
+                        label = { Text("合并恢复") },
+                    )
+                    FilterChip(
+                        selected = restoreMode == BackupAndSyncUseCase.RestoreMode.OVERWRITE,
+                        onClick = { onRestoreModeChange(BackupAndSyncUseCase.RestoreMode.OVERWRITE) },
+                        label = { Text("覆盖恢复") },
+                    )
+                }
                 OutlinedTextField(
                     value = tokenDraft,
                     onValueChange = { tokenDraft = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     placeholder = { Text("GitHub Token") },
+                    visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showToken = !showToken }) {
+                            Icon(
+                                imageVector = if (showToken) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (showToken) "隐藏 Token" else "显示 Token",
+                            )
+                        }
+                    },
                 )
                 OutlinedTextField(
                     value = gistDraft,
@@ -632,17 +668,46 @@ private fun ProfileTab(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable { onCloudConfigChange(tokenDraft, gistDraft) }
-                        .background(ZenithAccentSoft)
+                        .clickable(enabled = !isWorking) { onCloudConfigChange(tokenDraft, gistDraft) }
+                        .background(if (isWorking) Color(0xFFE7EAF0) else ZenithAccentSoft)
                         .padding(horizontal = 14.dp, vertical = 12.dp),
+                    color = if (isWorking) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ActionTextButton(text = "本地备份", onClick = onBackupLocal, modifier = Modifier.weight(1f))
-                    ActionTextButton(text = "本地恢复", onClick = onRestoreLocal, modifier = Modifier.weight(1f))
+                    ActionTextButton(
+                        text = "本地备份",
+                        onClick = onBackupLocal,
+                        enabled = !isWorking,
+                        modifier = Modifier.weight(1f),
+                    )
+                    ActionTextButton(
+                        text = "本地恢复",
+                        onClick = { onRestoreLocal(restoreMode) },
+                        enabled = !isWorking,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ActionTextButton(text = "上传云端", onClick = onSyncUp, modifier = Modifier.weight(1f))
-                    ActionTextButton(text = "云端恢复", onClick = onSyncDown, modifier = Modifier.weight(1f))
+                    ActionTextButton(
+                        text = "上传云端",
+                        onClick = onSyncUp,
+                        enabled = !isWorking,
+                        modifier = Modifier.weight(1f),
+                    )
+                    ActionTextButton(
+                        text = "云端恢复",
+                        onClick = { onSyncDown(restoreMode) },
+                        enabled = !isWorking,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (isWorking) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(
+                        text = workLabel ?: "正在处理，请稍候...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 Text(
                     text = "最近备份：${if (lastBackupPath.isBlank()) "暂无" else lastBackupPath}",
@@ -1070,15 +1135,17 @@ private fun BottomNavItem(
 private fun ActionTextButton(
     text: String,
     onClick: () -> Unit,
+    enabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     Text(
         text = text,
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
-            .clickable { onClick() }
-            .background(ZenithAccentSoft)
+            .clickable(enabled = enabled) { onClick() }
+            .background(if (enabled) ZenithAccentSoft else Color(0xFFE7EAF0))
             .padding(horizontal = 14.dp, vertical = 12.dp),
+        color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
 

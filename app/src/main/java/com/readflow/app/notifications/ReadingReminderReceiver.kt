@@ -15,6 +15,8 @@ import com.readflow.app.R
 class ReadingReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         ReadingNotificationChannels.ensureCreated(context)
+        val hour = intent?.getIntExtra(ReadingReminderScheduler.EXTRA_HOUR, 21) ?: 21
+        val minute = intent?.getIntExtra(ReadingReminderScheduler.EXTRA_MINUTE, 0) ?: 0
 
         val hasPermission = ContextCompat.checkSelfPermission(
             context,
@@ -44,5 +46,11 @@ class ReadingReminderReceiver : BroadcastReceiver() {
         runCatching {
             NotificationManagerCompat.from(context).notify(7002, notification)
         }
+
+        ReadingReminderScheduler.scheduleNext(
+            context = context,
+            hour = hour,
+            minute = minute,
+        )
     }
 }

@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import com.readflow.app.data.local.datastore.SettingsKeys
+import com.readflow.app.data.local.security.SecureTokenStore
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.domain.model.ReadingNote
 import com.readflow.app.domain.model.ReadingSettings
@@ -20,10 +21,12 @@ import javax.inject.Inject
 
 class ReaderSettingsRepositoryImpl @Inject constructor(
     private val dataStore: DataStore<Preferences>,
+    private val secureTokenStore: SecureTokenStore,
 ) : ReaderSettingsRepository {
     override fun observeSettings(): Flow<ReadingSettings> = dataStore.data.map { pref ->
         val groupsJson = pref[SettingsKeys.BOOK_GROUPS_JSON].orEmpty()
         val notesJson = pref[SettingsKeys.READING_NOTES_JSON].orEmpty()
+        val legacyToken = pref[SettingsKeys.CLOUD_SYNC_TOKEN].orEmpty()
         ReadingSettings(
             fontSize = pref[SettingsKeys.FONT_SIZE] ?: 18,
             lineHeight = pref[SettingsKeys.LINE_HEIGHT] ?: 1.6f,
@@ -49,7 +52,7 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
             reminderMinute = pref[SettingsKeys.REMINDER_MINUTE] ?: 0,
             bookGroups = decodeBookGroups(groupsJson),
             readingNotes = decodeNotes(notesJson),
-            cloudSyncToken = pref[SettingsKeys.CLOUD_SYNC_TOKEN] ?: "",
+            cloudSyncToken = secureTokenStore.readCloudSyncToken(legacyToken),
             cloudGistId = pref[SettingsKeys.CLOUD_GIST_ID] ?: "",
             lastBackupPath = pref[SettingsKeys.LAST_BACKUP_PATH] ?: "",
             lastSyncAt = pref[SettingsKeys.LAST_SYNC_AT]?.toLongOrNull() ?: 0L,
@@ -214,8 +217,10 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
     }
 
     override suspend fun updateCloudSyncConfig(token: String, gistId: String) {
+        secureTokenStore.saveCloudSyncToken(token)
         dataStore.edit {
-            it[SettingsKeys.CLOUD_SYNC_TOKEN] = token.trim()
+            // 兼容旧版本字段：新版本不再明文保存 token。
+            it[SettingsKeys.CLOUD_SYNC_TOKEN] = ""
             it[SettingsKeys.CLOUD_GIST_ID] = gistId.trim()
         }
     }

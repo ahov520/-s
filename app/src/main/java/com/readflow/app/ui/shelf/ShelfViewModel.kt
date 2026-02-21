@@ -33,8 +33,10 @@ data class ShelfUiState(
     val cloudGistId: String = "",
     val lastBackupPath: String = "",
     val lastSyncAt: Long = 0L,
+    val restoreMode: BackupAndSyncUseCase.RestoreMode = BackupAndSyncUseCase.RestoreMode.MERGE,
     val isImporting: Boolean = false,
     val isWorking: Boolean = false,
+    val workLabel: String? = null,
     val error: String? = null,
     val message: String? = null,
 )
@@ -133,22 +135,29 @@ class ShelfViewModel @Inject constructor(
     fun updateCloudSyncConfig(token: String, gistId: String) {
         viewModelScope.launch {
             settingsRepository.updateCloudSyncConfig(token, gistId)
+            _uiState.update { it.copy(message = "云同步配置已保存") }
         }
+    }
+
+    fun updateRestoreMode(mode: BackupAndSyncUseCase.RestoreMode) {
+        _uiState.update { it.copy(restoreMode = mode) }
     }
 
     fun backupToLocal() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isWorking = true, error = null, message = null) }
+            _uiState.update { it.copy(isWorking = true, workLabel = "正在生成本地备份...", error = null, message = null) }
             val result = backupAndSyncUseCase.createLocalBackup()
             _uiState.update {
                 if (result.isSuccess) {
                     it.copy(
                         isWorking = false,
+                        workLabel = null,
                         message = "本地备份完成：${result.getOrNull().orEmpty()}",
                     )
                 } else {
                     it.copy(
                         isWorking = false,
+                        workLabel = null,
                         error = result.exceptionOrNull()?.message ?: "本地备份失败",
                     )
                 }
@@ -156,19 +165,22 @@ class ShelfViewModel @Inject constructor(
         }
     }
 
-    fun restoreFromLocalBackup() {
+    fun restoreFromLocalBackup(mode: BackupAndSyncUseCase.RestoreMode = _uiState.value.restoreMode) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isWorking = true, error = null, message = null) }
-            val result = backupAndSyncUseCase.restoreFromLocalBackup()
+            _uiState.update { it.copy(isWorking = true, workLabel = "正在执行本地恢复...", error = null, message = null) }
+            val result = backupAndSyncUseCase.restoreFromLocalBackup(mode = mode)
+            val label = if (mode == BackupAndSyncUseCase.RestoreMode.OVERWRITE) "覆盖恢复" else "合并恢复"
             _uiState.update {
                 if (result.isSuccess) {
                     it.copy(
                         isWorking = false,
-                        message = "本地恢复完成：${result.getOrNull().orEmpty()}",
+                        workLabel = null,
+                        message = "本地${label}完成：${result.getOrNull().orEmpty()}",
                     )
                 } else {
                     it.copy(
                         isWorking = false,
+                        workLabel = null,
                         error = result.exceptionOrNull()?.message ?: "本地恢复失败",
                     )
                 }
@@ -178,17 +190,19 @@ class ShelfViewModel @Inject constructor(
 
     fun syncToCloud() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isWorking = true, error = null, message = null) }
+            _uiState.update { it.copy(isWorking = true, workLabel = "正在上传云端备份...", error = null, message = null) }
             val result = backupAndSyncUseCase.uploadToCloud()
             _uiState.update {
                 if (result.isSuccess) {
                     it.copy(
                         isWorking = false,
+                        workLabel = null,
                         message = "云同步成功：${result.getOrNull().orEmpty()}",
                     )
                 } else {
                     it.copy(
                         isWorking = false,
+                        workLabel = null,
                         error = result.exceptionOrNull()?.message ?: "云同步失败",
                     )
                 }
@@ -196,19 +210,22 @@ class ShelfViewModel @Inject constructor(
         }
     }
 
-    fun restoreFromCloud() {
+    fun restoreFromCloud(mode: BackupAndSyncUseCase.RestoreMode = _uiState.value.restoreMode) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isWorking = true, error = null, message = null) }
-            val result = backupAndSyncUseCase.restoreFromCloud()
+            _uiState.update { it.copy(isWorking = true, workLabel = "正在从云端恢复...", error = null, message = null) }
+            val result = backupAndSyncUseCase.restoreFromCloud(mode = mode)
+            val label = if (mode == BackupAndSyncUseCase.RestoreMode.OVERWRITE) "覆盖恢复" else "合并恢复"
             _uiState.update {
                 if (result.isSuccess) {
                     it.copy(
                         isWorking = false,
-                        message = "云恢复成功：${result.getOrNull().orEmpty()}",
+                        workLabel = null,
+                        message = "云端${label}成功：${result.getOrNull().orEmpty()}",
                     )
                 } else {
                     it.copy(
                         isWorking = false,
+                        workLabel = null,
                         error = result.exceptionOrNull()?.message ?: "云恢复失败",
                     )
                 }

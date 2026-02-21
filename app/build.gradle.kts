@@ -106,6 +106,7 @@ dependencies {
     implementation(libs.juniversalchardet)
     implementation(libs.google.material)
     implementation(libs.coil.compose)
+    implementation(libs.androidx.security.crypto)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)
