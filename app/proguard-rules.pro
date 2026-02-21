@@ -1,0 +1,3 @@
+-keep class dagger.hilt.** { *; }
+-keep class javax.inject.** { *; }
+-dontwarn org.mozilla.universalchardet.**
