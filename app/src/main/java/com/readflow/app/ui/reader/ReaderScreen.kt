@@ -35,7 +35,10 @@ import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.ui.reader.components.BookmarkSheet
 import com.readflow.app.ui.reader.components.ChapterListSheet
@@ -59,6 +62,8 @@ fun ReaderScreen(
     var showChapters by remember { mutableStateOf(false) }
     var showImmersive by remember { mutableStateOf(false) }
     val activity = LocalContext.current.findActivity()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val originalBrightness = remember(activity) { activity?.window?.attributes?.screenBrightness ?: -1f }
 
     LaunchedEffect(bookId) {
         viewModel.loadBook(bookId)
@@ -67,36 +72,67 @@ fun ReaderScreen(
     val readingTheme = readingThemeFor(state.settings.bgColorKey)
     val progress = if (state.content.isEmpty()) 0f else state.currentPosition.toFloat() / state.content.length
 
-    DisposableEffect(state.settings.immersiveEnabled, state.settings.brightnessLocked, activity) {
+    DisposableEffect(
+        state.settings.immersiveEnabled,
+        state.settings.brightnessLocked,
+        activity,
+        lifecycleOwner,
+        originalBrightness,
+    ) {
         if (activity != null) {
             val window = activity.window
             val decor = window.decorView
             val controller = WindowInsetsControllerCompat(window, decor)
-            val previousBrightness = window.attributes.screenBrightness
 
-            if (state.settings.immersiveEnabled) {
-                WindowCompat.setDecorFitsSystemWindows(window, false)
-                controller.hide(WindowInsetsCompat.Type.systemBars())
-                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            } else {
+            fun applyImmersiveState() {
+                if (state.settings.immersiveEnabled) {
+                    WindowCompat.setDecorFitsSystemWindows(window, false)
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                } else {
+                    WindowCompat.setDecorFitsSystemWindows(window, true)
+                    controller.show(WindowInsetsCompat.Type.systemBars())
+                }
+
+                val attrs = window.attributes
+                attrs.screenBrightness = if (state.settings.brightnessLocked) {
+                    if (attrs.screenBrightness > 0f) attrs.screenBrightness else 0.55f
+                } else {
+                    -1f
+                }
+                window.attributes = attrs
+            }
+
+            fun restoreWindowState() {
                 WindowCompat.setDecorFitsSystemWindows(window, true)
                 controller.show(WindowInsetsCompat.Type.systemBars())
+                val attrs = window.attributes
+                attrs.screenBrightness = originalBrightness
+                window.attributes = attrs
             }
 
-            val attrs = window.attributes
-            attrs.screenBrightness = if (state.settings.brightnessLocked) {
-                if (attrs.screenBrightness > 0f) attrs.screenBrightness else 0.55f
-            } else {
-                -1f
+            applyImmersiveState()
+
+            val observer = LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_RESUME -> {
+                        applyImmersiveState()
+                        viewModel.onAppResumed()
+                    }
+
+                    Lifecycle.Event.ON_STOP -> {
+                        restoreWindowState()
+                        viewModel.onAppBackgrounded()
+                    }
+
+                    else -> Unit
+                }
             }
-            window.attributes = attrs
+            lifecycleOwner.lifecycle.addObserver(observer)
 
             onDispose {
-                WindowCompat.setDecorFitsSystemWindows(window, true)
-                controller.show(WindowInsetsCompat.Type.systemBars())
-                val resetAttrs = window.attributes
-                resetAttrs.screenBrightness = previousBrightness
-                window.attributes = resetAttrs
+                lifecycleOwner.lifecycle.removeObserver(observer)
+                restoreWindowState()
             }
         } else {
             onDispose { }

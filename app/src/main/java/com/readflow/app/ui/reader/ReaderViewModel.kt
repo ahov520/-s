@@ -14,6 +14,7 @@ import com.readflow.app.domain.repository.BookRepository
 import com.readflow.app.domain.repository.BookmarkRepository
 import com.readflow.app.domain.repository.ChapterIndexRepository
 import com.readflow.app.domain.repository.ReaderSettingsRepository
+import com.readflow.app.domain.usecase.AutoPageProgressPolicy
 import com.readflow.app.domain.usecase.GetBookContentUseCase
 import com.readflow.app.domain.usecase.IndexChaptersUseCase
 import com.readflow.app.domain.usecase.PaginateContentUseCase
@@ -29,7 +30,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.util.UUID
@@ -39,6 +42,7 @@ private const val SEARCH_DEBOUNCE = 300L
 private const val SEARCH_LIMIT = 200
 private const val FOCUS_TICK_SECONDS = 1
 private const val TTS_PROGRESS_STEP = 35
+private const val STATS_FLUSH_INTERVAL_SECONDS = 20
 
 data class SearchResultUi(
     val position: Int,
@@ -96,6 +100,9 @@ class ReaderViewModel @Inject constructor(
     private var focusTimerJob: Job? = null
     private var ttsController: SystemTtsController? = null
     private var lastTtsPosition = -1
+    private var pendingReadStatsSeconds = 0
+    private var pendingReadStatsDate = ""
+    private var shouldResumeFocusOnForeground = false
 
     init {
         ttsController = SystemTtsController(
@@ -120,6 +127,9 @@ class ReaderViewModel @Inject constructor(
         if (bookId.isBlank()) return
         if (currentBookId == bookId && _uiState.value.content.isNotBlank()) return
         currentBookId = bookId
+        stopFocusTimer()
+        ttsController?.stop()
+        autoPageJob?.cancel()
 
         _uiState.update { it.copy(isLoading = true, error = null) }
 
@@ -409,6 +419,26 @@ class ReaderViewModel @Inject constructor(
         _uiState.update { it.copy(focusSessionSeconds = 0) }
     }
 
+    fun onAppBackgrounded() {
+        shouldResumeFocusOnForeground = _uiState.value.isFocusTimerRunning
+        if (_uiState.value.isFocusTimerRunning) {
+            stopFocusTimer()
+        } else {
+            flushPendingReadStatsAsync()
+        }
+        if (_uiState.value.settings.mistouchGuardEnabled) {
+            lockMistouch()
+        }
+    }
+
+    fun onAppResumed() {
+        if (shouldResumeFocusOnForeground) {
+            shouldResumeFocusOnForeground = false
+            startFocusTimer()
+        }
+        ensureAutoPageLoop()
+    }
+
     private fun recalculatePagination() {
         val state = _uiState.value
         if (state.content.isEmpty()) return
@@ -472,8 +502,8 @@ class ReaderViewModel @Inject constructor(
         val state = _uiState.value
         if (!state.settings.autoPageEnabled) return
         autoPageJob = viewModelScope.launch {
-            while (true) {
-                delay(state.settings.autoPageIntervalMs.toLong())
+            while (isActive) {
+                delay(_uiState.value.settings.autoPageIntervalMs.toLong())
                 val snapshot = _uiState.value
                 if (!snapshot.settings.autoPageEnabled) break
                 if (snapshot.ttsState == TtsPlaybackState.SPEAKING) continue
@@ -481,7 +511,14 @@ class ReaderViewModel @Inject constructor(
                 if (snapshot.settings.pageMode == PageMode.PAGE) {
                     nextPage()
                 } else {
-                    val next = (snapshot.currentPosition + 220).coerceAtMost(snapshot.content.length - 1)
+                    val next = AutoPageProgressPolicy.nextScrollPosition(
+                        content = snapshot.content,
+                        currentPosition = snapshot.currentPosition,
+                    )
+                    if (next <= snapshot.currentPosition) {
+                        settingsRepository.updateAutoPageEnabled(false)
+                        break
+                    }
                     jumpToPosition(next)
                 }
                 if (_uiState.value.currentPosition >= _uiState.value.content.length - 1) {
@@ -497,21 +534,45 @@ class ReaderViewModel @Inject constructor(
         _uiState.update { it.copy(isFocusTimerRunning = true) }
         focusTimerJob?.cancel()
         focusTimerJob = viewModelScope.launch {
-            while (true) {
+            while (isActive) {
                 delay(1000L)
                 val today = currentDateString()
+                if (pendingReadStatsDate.isNotBlank() && pendingReadStatsDate != today) {
+                    flushPendingReadStats()
+                }
+                if (pendingReadStatsDate.isBlank()) {
+                    pendingReadStatsDate = today
+                }
+                pendingReadStatsSeconds += FOCUS_TICK_SECONDS
                 _uiState.update { it.copy(focusSessionSeconds = it.focusSessionSeconds + FOCUS_TICK_SECONDS) }
-                settingsRepository.updateReadStats(FOCUS_TICK_SECONDS, today)
+                if (pendingReadStatsSeconds >= STATS_FLUSH_INTERVAL_SECONDS) {
+                    flushPendingReadStats()
+                }
             }
         }
     }
 
     private fun stopFocusTimer() {
         focusTimerJob?.cancel()
+        focusTimerJob = null
         _uiState.update { it.copy(isFocusTimerRunning = false) }
+        flushPendingReadStatsAsync()
     }
 
     private fun currentDateString(): String = LocalDate.now().toString()
+
+    private suspend fun flushPendingReadStats() {
+        val delta = pendingReadStatsSeconds
+        val day = pendingReadStatsDate
+        if (delta <= 0 || day.isBlank()) return
+        pendingReadStatsSeconds = 0
+        pendingReadStatsDate = ""
+        settingsRepository.updateReadStats(secondsDelta = delta, today = day)
+    }
+
+    private fun flushPendingReadStatsAsync() {
+        viewModelScope.launch { flushPendingReadStats() }
+    }
 
     private suspend fun executeSearch(query: String) {
         val state = _uiState.value
@@ -548,7 +609,9 @@ class ReaderViewModel @Inject constructor(
 
     override fun onCleared() {
         ttsController?.stop()
-        stopFocusTimer()
+        focusTimerJob?.cancel()
+        _uiState.update { it.copy(isFocusTimerRunning = false) }
+        runCatching { runBlocking { flushPendingReadStats() } }
         autoPageJob?.cancel()
         ttsController?.shutdown()
         super.onCleared()

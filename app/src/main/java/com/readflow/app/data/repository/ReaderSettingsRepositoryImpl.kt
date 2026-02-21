@@ -9,7 +9,8 @@ import com.readflow.app.domain.model.ReadingSettings
 import com.readflow.app.domain.model.TtsProvider
 import com.readflow.app.domain.model.ThemeMode
 import com.readflow.app.domain.repository.ReaderSettingsRepository
-import java.time.LocalDate
+import com.readflow.app.domain.usecase.ReadStatsCalculator
+import com.readflow.app.domain.usecase.ReadStatsSnapshot
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
@@ -97,35 +98,33 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
 
     override suspend fun updateReadStats(secondsDelta: Int, today: String) {
         dataStore.edit { pref ->
-            val delta = secondsDelta.coerceAtLeast(0)
-            val prevDate = pref[SettingsKeys.LAST_READ_DATE].orEmpty()
-            val prevDaily = pref[SettingsKeys.DAILY_READ_SECONDS] ?: 0
-            val prevStreak = pref[SettingsKeys.STREAK_DAYS] ?: 0
-
-            if (prevDate == today || prevDate.isBlank()) {
-                pref[SettingsKeys.DAILY_READ_SECONDS] = if (prevDate == today) prevDaily + delta else delta
-                pref[SettingsKeys.LAST_READ_DATE] = today
-                pref[SettingsKeys.STREAK_DAYS] = if (prevDate.isBlank()) 1 else prevStreak.coerceAtLeast(1)
-            } else {
-                val nextStreak = if (isYesterday(prevDate, today)) prevStreak + 1 else 1
-                pref[SettingsKeys.DAILY_READ_SECONDS] = delta
-                pref[SettingsKeys.LAST_READ_DATE] = today
-                pref[SettingsKeys.STREAK_DAYS] = nextStreak
-            }
+            val current = ReadStatsSnapshot(
+                dailyReadSeconds = pref[SettingsKeys.DAILY_READ_SECONDS] ?: 0,
+                lastReadDate = pref[SettingsKeys.LAST_READ_DATE].orEmpty(),
+                streakDays = pref[SettingsKeys.STREAK_DAYS] ?: 0,
+            )
+            val updated = ReadStatsCalculator.applyDelta(
+                current = current,
+                secondsDelta = secondsDelta,
+                today = today,
+            )
+            pref[SettingsKeys.DAILY_READ_SECONDS] = updated.dailyReadSeconds
+            pref[SettingsKeys.LAST_READ_DATE] = updated.lastReadDate
+            pref[SettingsKeys.STREAK_DAYS] = updated.streakDays
         }
     }
 
     override suspend fun resetDailyReadStats(today: String) {
         dataStore.edit { pref ->
-            pref[SettingsKeys.LAST_READ_DATE] = today
-            pref[SettingsKeys.DAILY_READ_SECONDS] = 0
-            pref[SettingsKeys.STREAK_DAYS] = (pref[SettingsKeys.STREAK_DAYS] ?: 0).coerceAtLeast(1)
+            val current = ReadStatsSnapshot(
+                dailyReadSeconds = pref[SettingsKeys.DAILY_READ_SECONDS] ?: 0,
+                lastReadDate = pref[SettingsKeys.LAST_READ_DATE].orEmpty(),
+                streakDays = pref[SettingsKeys.STREAK_DAYS] ?: 0,
+            )
+            val updated = ReadStatsCalculator.resetDaily(current, today)
+            pref[SettingsKeys.DAILY_READ_SECONDS] = updated.dailyReadSeconds
+            pref[SettingsKeys.LAST_READ_DATE] = updated.lastReadDate
+            pref[SettingsKeys.STREAK_DAYS] = updated.streakDays
         }
-    }
-
-    private fun isYesterday(previous: String, today: String): Boolean {
-        return runCatching {
-            LocalDate.parse(previous).plusDays(1) == LocalDate.parse(today)
-        }.getOrDefault(false)
     }
 }
