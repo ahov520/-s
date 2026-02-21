@@ -11,7 +11,7 @@ import com.readflow.app.data.local.db.entity.ChapterIndexEntity
 
 @Database(
     entities = [BookEntity::class, BookmarkEntity::class, ChapterIndexEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class ReadFlowDatabase : RoomDatabase() {

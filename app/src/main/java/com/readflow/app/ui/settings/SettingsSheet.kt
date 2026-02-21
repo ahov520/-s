@@ -45,23 +45,23 @@ fun SettingsSheet(
                 .padding(horizontal = 18.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Reader Settings", style = MaterialTheme.typography.titleLarge)
+            Text("阅读设置", style = MaterialTheme.typography.titleLarge)
 
-            Text("Page Mode", style = MaterialTheme.typography.labelMedium)
+            Text("翻页模式", style = MaterialTheme.typography.labelMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = settings.pageMode == PageMode.SCROLL,
                     onClick = { onPageModeChange(PageMode.SCROLL) },
-                    label = { Text("Scroll") },
+                    label = { Text("滚动") },
                 )
                 FilterChip(
                     selected = settings.pageMode == PageMode.PAGE,
                     onClick = { onPageModeChange(PageMode.PAGE) },
-                    label = { Text("Page") },
+                    label = { Text("仿真翻页") },
                 )
             }
 
-            Text("Theme", style = MaterialTheme.typography.labelMedium)
+            Text("阅读背景", style = MaterialTheme.typography.labelMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ReadingThemes.forEach { theme ->
                     val selected = settings.bgColorKey == theme.key
@@ -95,36 +95,36 @@ fun SettingsSheet(
                 }
             }
 
-            Text("Text Size ${settings.fontSize}", style = MaterialTheme.typography.labelMedium)
+            Text("字号 ${settings.fontSize}", style = MaterialTheme.typography.labelMedium)
             Slider(
                 value = settings.fontSize.toFloat(),
                 onValueChange = { onFontSizeChange(it.toInt()) },
                 valueRange = 14f..30f,
             )
 
-            Text("Line Height ${"%.1f".format(settings.lineHeight)}", style = MaterialTheme.typography.labelMedium)
+            Text("行高 ${"%.1f".format(settings.lineHeight)}", style = MaterialTheme.typography.labelMedium)
             Slider(
                 value = settings.lineHeight,
                 onValueChange = onLineHeightChange,
                 valueRange = 1.2f..2.0f,
             )
 
-            Text("Theme Mode", style = MaterialTheme.typography.labelMedium)
+            Text("显示模式", style = MaterialTheme.typography.labelMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = settings.themeMode == ThemeMode.LIGHT,
                     onClick = { onThemeModeChange(ThemeMode.LIGHT) },
-                    label = { Text("Light") },
+                    label = { Text("浅色") },
                 )
                 FilterChip(
                     selected = settings.themeMode == ThemeMode.DARK,
                     onClick = { onThemeModeChange(ThemeMode.DARK) },
-                    label = { Text("Dark") },
+                    label = { Text("深色") },
                 )
                 FilterChip(
                     selected = settings.themeMode == ThemeMode.SYSTEM,
                     onClick = { onThemeModeChange(ThemeMode.SYSTEM) },
-                    label = { Text("System") },
+                    label = { Text("跟随系统") },
                 )
             }
         }

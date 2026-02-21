@@ -40,9 +40,9 @@ fun ScrollReader(
         offsets
     }
 
-    LaunchedEffect(paragraphs) {
+    LaunchedEffect(paragraphs, currentPosition) {
         val targetIndex = starts.indexOfLast { it <= currentPosition }.coerceAtLeast(0)
-        if (targetIndex in paragraphs.indices) {
+        if (targetIndex in paragraphs.indices && listState.firstVisibleItemIndex != targetIndex) {
             listState.scrollToItem(targetIndex)
         }
     }

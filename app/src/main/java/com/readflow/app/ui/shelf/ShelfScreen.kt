@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,9 +34,11 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -52,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -63,6 +67,7 @@ import com.readflow.app.ui.shelf.components.EmptyState
 import com.readflow.app.ui.theme.ZenithAccent
 import com.readflow.app.ui.theme.ZenithAccentSoft
 import com.readflow.app.ui.theme.ZenithBackground
+import coil.compose.AsyncImage
 
 enum class ShelfTab {
     LIBRARY,
@@ -80,6 +85,8 @@ fun ShelfScreen(
     var activeTab by rememberSaveable { mutableStateOf(ShelfTab.LIBRARY) }
     var isSearching by rememberSaveable { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
+    var discoverCategory by rememberSaveable { mutableStateOf("全部") }
+    var showDiscoverFilter by rememberSaveable { mutableStateOf(false) }
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -120,12 +127,18 @@ fun ShelfScreen(
                     books = uiState.books,
                     isSearching = isSearching,
                     searchQuery = searchQuery,
+                    selectedCategory = discoverCategory,
                     onSearchModeChange = { isSearching = it },
                     onSearchQueryChange = { searchQuery = it },
+                    onCategorySelected = { discoverCategory = it },
+                    onShowFilter = { showDiscoverFilter = true },
                     onOpenBook = { onOpenReader(it.id) },
                 )
 
-                ShelfTab.PROFILE -> ProfileTab()
+                ShelfTab.PROFILE -> ProfileTab(
+                    books = uiState.books,
+                    onImport = { launcher.launch(arrayOf("text/plain", "text/*")) },
+                )
             }
 
             if (uiState.isImporting) {
@@ -153,6 +166,17 @@ fun ShelfScreen(
                         Text("取消")
                     }
                 }
+            )
+        }
+
+        if (showDiscoverFilter) {
+            DiscoverFilterSheet(
+                selectedCategory = discoverCategory,
+                onDismiss = { showDiscoverFilter = false },
+                onCategorySelected = {
+                    discoverCategory = it
+                    showDiscoverFilter = false
+                },
             )
         }
     }
@@ -184,10 +208,10 @@ private fun LibraryTab(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         ShelfHeader(
-            title = "Library",
+            title = "书架",
             isSearching = isSearching,
             searchQuery = searchQuery,
-            searchPlaceholder = "Search library...",
+            searchPlaceholder = "搜索书架...",
             onSearchModeChange = onSearchModeChange,
             onSearchQueryChange = onSearchQueryChange,
             onPrimaryAction = onImport,
@@ -202,7 +226,7 @@ private fun LibraryTab(
 
         if (isSearching) {
             Text(
-                text = if (searchQuery.isBlank()) "All Books" else "Search Results (${filteredBooks.size})",
+                text = if (searchQuery.isBlank()) "全部书籍" else "搜索结果（${filteredBooks.size}）",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -217,7 +241,7 @@ private fun LibraryTab(
         }
 
         Text(
-            text = "All Books",
+            text = "全部书籍",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -231,17 +255,23 @@ private fun DiscoverTab(
     books: List<Book>,
     isSearching: Boolean,
     searchQuery: String,
+    selectedCategory: String,
     onSearchModeChange: (Boolean) -> Unit,
     onSearchQueryChange: (String) -> Unit,
+    onCategorySelected: (String) -> Unit,
+    onShowFilter: () -> Unit,
     onOpenBook: (Book) -> Unit,
 ) {
-    val filteredBooks = remember(books, searchQuery) {
-        if (searchQuery.isBlank()) books else books.filter {
+    val categories = listOf("全部", "推荐", "玄幻", "科幻", "言情", "悬疑", "历史", "武侠")
+    val booksByCategory = remember(books, selectedCategory) {
+        filterBooksByCategory(books, selectedCategory)
+    }
+    val filteredBooks = remember(booksByCategory, searchQuery) {
+        if (searchQuery.isBlank()) booksByCategory else booksByCategory.filter {
             it.title.contains(searchQuery, ignoreCase = true)
         }
     }
-    val featured = books.firstOrNull()
-    val categories = listOf("For You", "Fiction", "Sci-Fi", "Fantasy", "Romance", "Thriller")
+    val featured = filteredBooks.firstOrNull()
 
     Column(
         modifier = Modifier
@@ -251,20 +281,20 @@ private fun DiscoverTab(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         ShelfHeader(
-            title = "Discover",
+            title = "发现",
             isSearching = isSearching,
             searchQuery = searchQuery,
-            searchPlaceholder = "Search discover...",
+            searchPlaceholder = "搜索发现...",
             onSearchModeChange = onSearchModeChange,
             onSearchQueryChange = onSearchQueryChange,
-            onPrimaryAction = {},
+            onPrimaryAction = onShowFilter,
             primaryIcon = Icons.Default.Tune,
             primaryLabel = "筛选",
         )
 
         if (isSearching) {
             Text(
-                text = if (searchQuery.isBlank()) "All Books" else "Search Results (${filteredBooks.size})",
+                text = if (searchQuery.isBlank()) "全部书籍" else "搜索结果（${filteredBooks.size}）",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -276,11 +306,12 @@ private fun DiscoverTab(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            categories.forEachIndexed { index, label ->
-                val selected = index == 0
+            categories.forEach { label ->
+                val selected = label == selectedCategory
                 Surface(
                     shape = RoundedCornerShape(999.dp),
                     color = if (selected) MaterialTheme.colorScheme.onSurface else Color.White,
+                    onClick = { onCategorySelected(label) },
                     modifier = Modifier.clip(RoundedCornerShape(999.dp))
                 ) {
                     Text(
@@ -297,8 +328,17 @@ private fun DiscoverTab(
             FeaturedCard(book = book, onClick = { onOpenBook(book) })
         }
 
+        if (filteredBooks.isEmpty()) {
+            Text(
+                text = "当前分类暂无书籍",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Column
+        }
+
         Text(
-            text = "Trending Now",
+            text = "本周热门",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
         )
@@ -307,7 +347,7 @@ private fun DiscoverTab(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            books.drop(1).ifEmpty { books }.forEach { book ->
+            filteredBooks.drop(1).ifEmpty { filteredBooks }.forEach { book ->
                 Column(
                     modifier = Modifier
                         .width(132.dp)
@@ -328,13 +368,70 @@ private fun DiscoverTab(
 }
 
 @Composable
-private fun ProfileTab() {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+private fun ProfileTab(
+    books: List<Book>,
+    onImport: () -> Unit,
+) {
+    val total = books.size
+    val reading = books.count { it.progress in 0.001f..0.999f }
+    val finished = books.count { it.progress >= 0.999f }
+    val latest = books.maxByOrNull { it.updatedAt }?.title ?: "暂无"
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
         Text(
-            text = "Profile Settings (Coming Soon)",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            text = "我的",
+            style = MaterialTheme.typography.headlineLarge,
+            color = MaterialTheme.colorScheme.onSurface,
         )
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = Color.White,
+            shadowElevation = 6.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("阅读概览", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("书架总数：$total 本", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("正在阅读：$reading 本", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("已读完成：$finished 本", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("最近更新：$latest", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = Color.White,
+            shadowElevation = 4.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("快捷操作", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "导入新书",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onImport() }
+                        .background(ZenithAccentSoft)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                )
+                Text(
+                    text = "说明：长按书籍可删除，阅读页可添加书签与切换主题。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -443,12 +540,26 @@ private fun ContinueReadingCard(
                     .width(72.dp)
                     .aspectRatio(2f / 3f)
                     .clip(RoundedCornerShape(14.dp))
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(cover.copy(alpha = 0.95f), cover.copy(alpha = 0.65f))
-                        )
+            ) {
+                if (book.coverImageUrl.isNullOrBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.linearGradient(
+                                    colors = listOf(cover.copy(alpha = 0.95f), cover.copy(alpha = 0.65f))
+                                )
+                            )
                     )
-            )
+                } else {
+                    AsyncImage(
+                        model = book.coverImageUrl,
+                        contentDescription = "${book.title}封面",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                }
+            }
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -505,20 +616,53 @@ private fun FeaturedCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(260.dp)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(cover.copy(alpha = 0.5f), cover.copy(alpha = 0.9f), Color.Black.copy(alpha = 0.85f))
-                    )
-                )
                 .padding(18.dp)
         ) {
+            if (book.coverImageUrl.isNullOrBlank()) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    cover.copy(alpha = 0.5f),
+                                    cover.copy(alpha = 0.9f),
+                                    Color.Black.copy(alpha = 0.85f)
+                                )
+                            )
+                        )
+                )
+            } else {
+                AsyncImage(
+                    model = book.coverImageUrl,
+                    contentDescription = "${book.title}封面",
+                    modifier = Modifier
+                        .matchParentSize()
+                        .clip(RoundedCornerShape(24.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.35f),
+                                    Color.Black.copy(alpha = 0.8f),
+                                )
+                            )
+                        )
+                )
+            }
             Column(modifier = Modifier.align(Alignment.BottomStart)) {
                 Surface(
                     shape = RoundedCornerShape(999.dp),
                     color = Color(0xFFFB923C).copy(alpha = 0.9f),
                 ) {
                     Text(
-                        text = "Bestseller",
+                        text = "热门推荐",
                         color = Color.White,
                         style = MaterialTheme.typography.labelMedium,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -527,7 +671,7 @@ private fun FeaturedCard(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(text = book.title, color = Color.White, style = MaterialTheme.typography.titleLarge)
                 Text(
-                    text = "Open and continue reading",
+                    text = "打开继续阅读",
                     color = Color.White.copy(alpha = 0.84f),
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -544,7 +688,7 @@ private fun GridSection(
 ) {
     if (books.isEmpty()) {
         Text(
-            text = "No books found",
+            text = "暂无匹配书籍",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 32.dp)
@@ -581,6 +725,58 @@ private fun GridSection(
 }
 
 @Composable
+private fun DiscoverFilterSheet(
+    selectedCategory: String,
+    onDismiss: () -> Unit,
+    onCategorySelected: (String) -> Unit,
+) {
+    val categories = listOf("全部", "推荐", "玄幻", "科幻", "言情", "悬疑", "历史", "武侠")
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("筛选分类", style = MaterialTheme.typography.titleLarge)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                categories.forEach { category ->
+                    FilterChip(
+                        selected = category == selectedCategory,
+                        onClick = { onCategorySelected(category) },
+                        label = { Text(category) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun filterBooksByCategory(books: List<Book>, category: String): List<Book> {
+    if (category == "全部") return books
+    if (category == "推荐") return books.sortedByDescending { it.updatedAt }
+    return books.filter { classifyCategoryByTitle(it.title) == category }
+}
+
+private fun classifyCategoryByTitle(title: String): String {
+    val lower = title.lowercase()
+    return when {
+        lower.contains("仙") || lower.contains("玄") || lower.contains("魔") -> "玄幻"
+        lower.contains("星") || lower.contains("机甲") || lower.contains("科幻") -> "科幻"
+        lower.contains("爱") || lower.contains("恋") || lower.contains("总裁") -> "言情"
+        lower.contains("案") || lower.contains("罪") || lower.contains("谜") -> "悬疑"
+        lower.contains("史") || lower.contains("朝") || lower.contains("国") -> "历史"
+        lower.contains("侠") || lower.contains("江湖") || lower.contains("剑") -> "武侠"
+        else -> "推荐"
+    }
+}
+
+@Composable
 private fun ShelfBottomBar(
     activeTab: ShelfTab,
     onTabSelected: (ShelfTab) -> Unit,
@@ -595,19 +791,19 @@ private fun ShelfBottomBar(
         ) {
             BottomNavItem(
                 icon = Icons.Default.Book,
-                label = "Library",
+                label = "书架",
                 active = activeTab == ShelfTab.LIBRARY,
                 onClick = { onTabSelected(ShelfTab.LIBRARY) },
             )
             BottomNavItem(
                 icon = Icons.Default.Explore,
-                label = "Discover",
+                label = "发现",
                 active = activeTab == ShelfTab.DISCOVER,
                 onClick = { onTabSelected(ShelfTab.DISCOVER) },
             )
             BottomNavItem(
                 icon = Icons.Default.Person,
-                label = "Profile",
+                label = "我的",
                 active = activeTab == ShelfTab.PROFILE,
                 onClick = { onTabSelected(ShelfTab.PROFILE) },
             )

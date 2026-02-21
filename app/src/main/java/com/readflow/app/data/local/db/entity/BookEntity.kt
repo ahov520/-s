@@ -14,6 +14,7 @@ data class BookEntity(
     val title: String,
     @ColumnInfo(name = "file_uri") val fileUri: String,
     @ColumnInfo(name = "cover_color") val coverColor: String,
+    @ColumnInfo(name = "cover_image_url") val coverImageUrl: String?,
     val progress: Float,
     @ColumnInfo(name = "current_position") val currentPosition: Int,
     @ColumnInfo(name = "total_chars") val totalChars: Int,

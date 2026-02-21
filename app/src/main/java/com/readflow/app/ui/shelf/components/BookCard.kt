@@ -18,11 +18,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.readflow.app.domain.model.Book
 import com.readflow.app.ui.theme.ZenithAccent
+import coil.compose.AsyncImage
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
@@ -46,12 +48,27 @@ fun BookCard(
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(16.dp))
-                .background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(cover.copy(alpha = 0.92f), cover.copy(alpha = 0.64f))
-                    )
-                )
         ) {
+            if (book.coverImageUrl.isNullOrBlank()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(2f / 3f)
+                        .background(
+                            brush = Brush.linearGradient(
+                                colors = listOf(cover.copy(alpha = 0.92f), cover.copy(alpha = 0.64f))
+                            )
+                        )
+                )
+            } else {
+                AsyncImage(
+                    model = book.coverImageUrl,
+                    contentDescription = "${book.title}封面",
+                    modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+
             if (progress in 0.001f..0.999f) {
                 Box(
                     modifier = Modifier
@@ -70,7 +87,7 @@ fun BookCard(
             }
             if (progress >= 1f) {
                 Text(
-                    text = "Read",
+                    text = "已读",
                     color = Color.White,
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier

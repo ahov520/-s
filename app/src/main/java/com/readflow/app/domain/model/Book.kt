@@ -5,6 +5,7 @@ data class Book(
     val title: String,
     val fileUri: String,
     val coverColor: String,
+    val coverImageUrl: String?,
     val progress: Float,
     val currentPosition: Int,
     val totalChars: Int,

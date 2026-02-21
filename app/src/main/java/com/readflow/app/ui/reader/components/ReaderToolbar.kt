@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -109,17 +110,17 @@ fun ReaderToolbar(
                     ) {
                         ActionPill(
                             icon = Icons.Default.FormatListBulleted,
-                            label = "Contents",
+                            label = "目录",
                             onClick = onShowChapters,
                         )
                         ActionPill(
                             icon = Icons.Default.Bookmarks,
-                            label = "Bookmarks",
+                            label = "书签",
                             onClick = onShowBookmarks,
                         )
                         ActionPill(
                             icon = Icons.Default.Settings,
-                            label = "Settings",
+                            label = "设置",
                             onClick = onShowSettings,
                             highlighted = true,
                         )
@@ -155,17 +156,16 @@ private fun ActionPill(
         modifier = Modifier
             .clip(RoundedCornerShape(16.dp))
             .background(if (highlighted) ZenithAccent.copy(alpha = 0.1f) else Color.Transparent)
+            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        IconButton(onClick = onClick, modifier = Modifier.padding(0.dp)) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (highlighted) ZenithAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = if (highlighted) ZenithAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text(
             text = label,
             style = MaterialTheme.typography.labelMedium,
