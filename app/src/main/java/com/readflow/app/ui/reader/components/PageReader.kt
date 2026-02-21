@@ -1,6 +1,7 @@
 package com.readflow.app.ui.reader.components
 
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -18,6 +19,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun PageReader(
     pages: List<String>,
     currentPage: Int,
