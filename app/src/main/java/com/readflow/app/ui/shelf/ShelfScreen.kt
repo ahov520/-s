@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +33,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -621,7 +621,7 @@ private fun FeaturedCard(
             if (book.coverImageUrl.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
-                        .matchParentSize()
+                        .fillMaxSize()
                         .clip(RoundedCornerShape(24.dp))
                         .background(
                             Brush.verticalGradient(
@@ -638,13 +638,13 @@ private fun FeaturedCard(
                     model = book.coverImageUrl,
                     contentDescription = "${book.title}封面",
                     modifier = Modifier
-                        .matchParentSize()
+                        .fillMaxSize()
                         .clip(RoundedCornerShape(24.dp)),
                     contentScale = ContentScale.Crop,
                 )
                 Box(
                     modifier = Modifier
-                        .matchParentSize()
+                        .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
                                 colors = listOf(
@@ -725,6 +725,7 @@ private fun GridSection(
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun DiscoverFilterSheet(
     selectedCategory: String,
     onDismiss: () -> Unit,
