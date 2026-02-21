@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -50,6 +51,7 @@ fun ReaderToolbar(
     onShowChapters: () -> Unit,
     onShowSearch: () -> Unit,
     onShowSettings: () -> Unit,
+    onShowImmersive: () -> Unit,
     onProgressChange: (Float) -> Unit,
     onPrevPage: () -> Unit,
     onNextPage: () -> Unit,
@@ -130,6 +132,11 @@ fun ReaderToolbar(
                             label = "设置",
                             onClick = onShowSettings,
                             highlighted = true,
+                        )
+                        ActionPill(
+                            icon = Icons.Default.Visibility,
+                            label = "沉浸",
+                            onClick = onShowImmersive,
                         )
                     }
 

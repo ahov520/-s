@@ -1,9 +1,13 @@
 package com.readflow.app.ui.reader
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,6 +18,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -21,12 +26,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.ui.reader.components.BookmarkSheet
 import com.readflow.app.ui.reader.components.ChapterListSheet
+import com.readflow.app.ui.reader.components.ImmersiveSheet
 import com.readflow.app.ui.reader.components.PageReader
 import com.readflow.app.ui.reader.components.ReaderToolbar
 import com.readflow.app.ui.reader.components.SearchSheet
@@ -44,6 +57,8 @@ fun ReaderScreen(
     var showSettings by remember { mutableStateOf(false) }
     var showBookmarks by remember { mutableStateOf(false) }
     var showChapters by remember { mutableStateOf(false) }
+    var showImmersive by remember { mutableStateOf(false) }
+    val activity = LocalContext.current.findActivity()
 
     LaunchedEffect(bookId) {
         viewModel.loadBook(bookId)
@@ -51,6 +66,42 @@ fun ReaderScreen(
 
     val readingTheme = readingThemeFor(state.settings.bgColorKey)
     val progress = if (state.content.isEmpty()) 0f else state.currentPosition.toFloat() / state.content.length
+
+    DisposableEffect(state.settings.immersiveEnabled, state.settings.brightnessLocked, activity) {
+        if (activity != null) {
+            val window = activity.window
+            val decor = window.decorView
+            val controller = WindowInsetsControllerCompat(window, decor)
+            val previousBrightness = window.attributes.screenBrightness
+
+            if (state.settings.immersiveEnabled) {
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            } else {
+                WindowCompat.setDecorFitsSystemWindows(window, true)
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+
+            val attrs = window.attributes
+            attrs.screenBrightness = if (state.settings.brightnessLocked) {
+                if (attrs.screenBrightness > 0f) attrs.screenBrightness else 0.55f
+            } else {
+                -1f
+            }
+            window.attributes = attrs
+
+            onDispose {
+                WindowCompat.setDecorFitsSystemWindows(window, true)
+                controller.show(WindowInsetsCompat.Type.systemBars())
+                val resetAttrs = window.attributes
+                resetAttrs.screenBrightness = previousBrightness
+                window.attributes = resetAttrs
+            }
+        } else {
+            onDispose { }
+        }
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -126,6 +177,7 @@ fun ReaderScreen(
             onShowChapters = { showChapters = true },
             onShowSearch = viewModel::showSearchPanel,
             onShowSettings = { showSettings = true },
+            onShowImmersive = { showImmersive = true },
             onProgressChange = { ratio ->
                 val pos = (state.content.length * ratio).toInt()
                 viewModel.jumpToPosition(pos)
@@ -133,6 +185,24 @@ fun ReaderScreen(
             onPrevPage = viewModel::previousPage,
             onNextPage = viewModel::nextPage,
         )
+
+        if (state.settings.mistouchGuardEnabled && state.isMistouchLocked) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.36f))
+                    .pointerInput(Unit) {
+                        detectTapGestures(onLongPress = { viewModel.unlockMistouch() })
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "防误触已锁定\n长按屏幕解除",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
     }
 
     if (showSettings) {
@@ -186,4 +256,37 @@ fun ReaderScreen(
             },
         )
     }
+
+    if (showImmersive) {
+        ImmersiveSheet(
+            settings = state.settings,
+            ttsState = state.ttsState,
+            focusSessionSeconds = state.focusSessionSeconds,
+            isFocusTimerRunning = state.isFocusTimerRunning,
+            isMistouchLocked = state.isMistouchLocked,
+            onDismiss = { showImmersive = false },
+            onStartTts = viewModel::startTts,
+            onPauseTts = viewModel::pauseTts,
+            onResumeTts = viewModel::resumeTts,
+            onStopTts = viewModel::stopTts,
+            onTtsProviderChange = viewModel::updateTtsProvider,
+            onTtsRateChange = viewModel::updateTtsRate,
+            onTtsPitchChange = viewModel::updateTtsPitch,
+            onAutoPageEnabledChange = viewModel::updateAutoPageEnabled,
+            onAutoPageIntervalChange = viewModel::updateAutoPageIntervalMs,
+            onToggleFocusTimer = viewModel::toggleFocusTimer,
+            onResetFocusSession = viewModel::resetFocusSession,
+            onImmersiveEnabledChange = viewModel::updateImmersiveEnabled,
+            onBrightnessLockedChange = viewModel::updateBrightnessLocked,
+            onMistouchGuardEnabledChange = viewModel::updateMistouchGuardEnabled,
+            onLockMistouch = viewModel::lockMistouch,
+            onUnlockMistouch = viewModel::unlockMistouch,
+        )
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

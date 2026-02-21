@@ -1,5 +1,6 @@
 package com.readflow.app.ui.reader
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.readflow.app.domain.model.Book
@@ -7,6 +8,7 @@ import com.readflow.app.domain.model.Bookmark
 import com.readflow.app.domain.model.ChapterIndex
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.domain.model.ReadingSettings
+import com.readflow.app.domain.model.TtsProvider
 import com.readflow.app.domain.model.ThemeMode
 import com.readflow.app.domain.repository.BookRepository
 import com.readflow.app.domain.repository.BookmarkRepository
@@ -17,6 +19,7 @@ import com.readflow.app.domain.usecase.IndexChaptersUseCase
 import com.readflow.app.domain.usecase.PaginateContentUseCase
 import com.readflow.app.domain.usecase.PaginationLayout
 import com.readflow.app.domain.usecase.SearchInTextUseCase
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
@@ -28,11 +31,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
 import java.util.UUID
 
 private const val PROGRESS_SAVE_DEBOUNCE = 3000L
 private const val SEARCH_DEBOUNCE = 300L
 private const val SEARCH_LIMIT = 200
+private const val FOCUS_TICK_SECONDS = 1
+private const val TTS_PROGRESS_STEP = 35
 
 data class SearchResultUi(
     val position: Int,
@@ -58,10 +64,15 @@ data class ReaderUiState(
     val searchQuery: String = "",
     val searchResults: List<SearchResultUi> = emptyList(),
     val searchTruncated: Boolean = false,
+    val ttsState: TtsPlaybackState = TtsPlaybackState.IDLE,
+    val focusSessionSeconds: Int = 0,
+    val isFocusTimerRunning: Boolean = false,
+    val isMistouchLocked: Boolean = false,
 )
 
 @HiltViewModel
 class ReaderViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val bookRepository: BookRepository,
     private val bookmarkRepository: BookmarkRepository,
     private val chapterIndexRepository: ChapterIndexRepository,
@@ -81,6 +92,29 @@ class ReaderViewModel @Inject constructor(
     private var chaptersJob: Job? = null
     private var currentLayout: PaginationLayout? = null
     private var searchJob: Job? = null
+    private var autoPageJob: Job? = null
+    private var focusTimerJob: Job? = null
+    private var ttsController: SystemTtsController? = null
+    private var lastTtsPosition = -1
+
+    init {
+        ttsController = SystemTtsController(
+            context = appContext,
+            onStateChanged = { state ->
+                _uiState.update { it.copy(ttsState = state) }
+                if (state != TtsPlaybackState.SPEAKING) {
+                    viewModelScope.launch { settingsRepository.updateAutoPageEnabled(false) }
+                }
+                ensureAutoPageLoop()
+            },
+            onProgress = { absolute ->
+                if (kotlin.math.abs(absolute - lastTtsPosition) >= TTS_PROGRESS_STEP) {
+                    lastTtsPosition = absolute
+                    jumpToPosition(absolute)
+                }
+            },
+        )
+    }
 
     fun loadBook(bookId: String) {
         if (bookId.isBlank()) return
@@ -92,8 +126,16 @@ class ReaderViewModel @Inject constructor(
         settingsJob?.cancel()
         settingsJob = viewModelScope.launch {
             settingsRepository.observeSettings().collect { settings ->
-                _uiState.update { it.copy(settings = settings) }
+                _uiState.update { state ->
+                    state.copy(
+                        settings = settings,
+                        isMistouchLocked = if (settings.mistouchGuardEnabled) state.isMistouchLocked else false,
+                    )
+                }
+                ttsController?.setRate(settings.ttsRate)
+                ttsController?.setPitch(settings.ttsPitch)
                 recalculatePagination()
+                ensureAutoPageLoop()
             }
         }
 
@@ -144,6 +186,10 @@ class ReaderViewModel @Inject constructor(
                     searchTruncated = false,
                     isSearchPanelVisible = false,
                     isSearching = false,
+                    ttsState = TtsPlaybackState.IDLE,
+                    focusSessionSeconds = 0,
+                    isFocusTimerRunning = false,
+                    isMistouchLocked = _uiState.value.settings.mistouchGuardEnabled,
                 )
             }
 
@@ -273,6 +319,96 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch { settingsRepository.updateBgColor(key) }
     }
 
+    fun startTts() {
+        val state = _uiState.value
+        if (state.content.isBlank()) return
+        ttsController?.setRate(state.settings.ttsRate)
+        ttsController?.setPitch(state.settings.ttsPitch)
+        ttsController?.speak(state.content, state.currentPosition)
+        viewModelScope.launch { settingsRepository.updateAutoPageEnabled(true) }
+        if (!_uiState.value.isFocusTimerRunning) {
+            startFocusTimer()
+        }
+    }
+
+    fun pauseTts() {
+        ttsController?.pause()
+    }
+
+    fun resumeTts() {
+        ttsController?.resume()
+        viewModelScope.launch { settingsRepository.updateAutoPageEnabled(true) }
+    }
+
+    fun stopTts() {
+        ttsController?.stop()
+        viewModelScope.launch { settingsRepository.updateAutoPageEnabled(false) }
+    }
+
+    fun updateTtsRate(value: Float) {
+        ttsController?.setRate(value)
+        viewModelScope.launch { settingsRepository.updateTtsRate(value) }
+    }
+
+    fun updateTtsProvider(provider: TtsProvider) {
+        viewModelScope.launch { settingsRepository.updateTtsProvider(provider) }
+    }
+
+    fun updateTtsPitch(value: Float) {
+        ttsController?.setPitch(value)
+        viewModelScope.launch { settingsRepository.updateTtsPitch(value) }
+    }
+
+    fun updateAutoPageEnabled(enabled: Boolean) {
+        val speaking = _uiState.value.ttsState == TtsPlaybackState.SPEAKING
+        if (speaking && !enabled) {
+            viewModelScope.launch { settingsRepository.updateAutoPageEnabled(true) }
+            return
+        }
+        viewModelScope.launch { settingsRepository.updateAutoPageEnabled(enabled) }
+        ensureAutoPageLoop()
+    }
+
+    fun updateAutoPageIntervalMs(value: Int) {
+        viewModelScope.launch { settingsRepository.updateAutoPageIntervalMs(value) }
+        ensureAutoPageLoop()
+    }
+
+    fun updateImmersiveEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.updateImmersiveEnabled(enabled) }
+    }
+
+    fun updateBrightnessLocked(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.updateBrightnessLocked(enabled) }
+    }
+
+    fun updateMistouchGuardEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.updateMistouchGuardEnabled(enabled) }
+        _uiState.update { it.copy(isMistouchLocked = enabled) }
+    }
+
+    fun lockMistouch() {
+        if (_uiState.value.settings.mistouchGuardEnabled) {
+            _uiState.update { it.copy(isMistouchLocked = true) }
+        }
+    }
+
+    fun unlockMistouch() {
+        _uiState.update { it.copy(isMistouchLocked = false) }
+    }
+
+    fun toggleFocusTimer() {
+        if (_uiState.value.isFocusTimerRunning) {
+            stopFocusTimer()
+        } else {
+            startFocusTimer()
+        }
+    }
+
+    fun resetFocusSession() {
+        _uiState.update { it.copy(focusSessionSeconds = 0) }
+    }
+
     private fun recalculatePagination() {
         val state = _uiState.value
         if (state.content.isEmpty()) return
@@ -331,6 +467,52 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+    private fun ensureAutoPageLoop() {
+        autoPageJob?.cancel()
+        val state = _uiState.value
+        if (!state.settings.autoPageEnabled) return
+        autoPageJob = viewModelScope.launch {
+            while (true) {
+                delay(state.settings.autoPageIntervalMs.toLong())
+                val snapshot = _uiState.value
+                if (!snapshot.settings.autoPageEnabled) break
+                if (snapshot.ttsState == TtsPlaybackState.SPEAKING) continue
+                if (snapshot.content.isBlank() || snapshot.isMistouchLocked) continue
+                if (snapshot.settings.pageMode == PageMode.PAGE) {
+                    nextPage()
+                } else {
+                    val next = (snapshot.currentPosition + 220).coerceAtMost(snapshot.content.length - 1)
+                    jumpToPosition(next)
+                }
+                if (_uiState.value.currentPosition >= _uiState.value.content.length - 1) {
+                    settingsRepository.updateAutoPageEnabled(false)
+                    break
+                }
+            }
+        }
+    }
+
+    private fun startFocusTimer() {
+        if (_uiState.value.isFocusTimerRunning) return
+        _uiState.update { it.copy(isFocusTimerRunning = true) }
+        focusTimerJob?.cancel()
+        focusTimerJob = viewModelScope.launch {
+            while (true) {
+                delay(1000L)
+                val today = currentDateString()
+                _uiState.update { it.copy(focusSessionSeconds = it.focusSessionSeconds + FOCUS_TICK_SECONDS) }
+                settingsRepository.updateReadStats(FOCUS_TICK_SECONDS, today)
+            }
+        }
+    }
+
+    private fun stopFocusTimer() {
+        focusTimerJob?.cancel()
+        _uiState.update { it.copy(isFocusTimerRunning = false) }
+    }
+
+    private fun currentDateString(): String = LocalDate.now().toString()
+
     private suspend fun executeSearch(query: String) {
         val state = _uiState.value
         if (state.content.isBlank()) return
@@ -362,5 +544,13 @@ class ReaderViewModel @Inject constructor(
 
     private fun chapterTitleForPosition(chapters: List<ChapterIndex>, position: Int): String? {
         return chapters.firstOrNull { position in it.startChar until it.endChar }?.title
+    }
+
+    override fun onCleared() {
+        ttsController?.stop()
+        stopFocusTimer()
+        autoPageJob?.cancel()
+        ttsController?.shutdown()
+        super.onCleared()
     }
 }

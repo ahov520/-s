@@ -137,6 +137,8 @@ fun ShelfScreen(
 
                 ShelfTab.PROFILE -> ProfileTab(
                     books = uiState.books,
+                    dailyReadSeconds = uiState.dailyReadSeconds,
+                    streakDays = uiState.streakDays,
                     onImport = { launcher.launch(arrayOf("text/plain", "text/*")) },
                 )
             }
@@ -370,6 +372,8 @@ private fun DiscoverTab(
 @Composable
 private fun ProfileTab(
     books: List<Book>,
+    dailyReadSeconds: Int,
+    streakDays: Int,
     onImport: () -> Unit,
 ) {
     val total = books.size
@@ -402,6 +406,8 @@ private fun ProfileTab(
                 Text("书架总数：$total 本", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("正在阅读：$reading 本", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("已读完成：$finished 本", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("今日阅读：${formatReadingDuration(dailyReadSeconds)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("连续阅读：$streakDays 天", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("最近更新：$latest", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -838,4 +844,11 @@ private fun BottomNavItem(
         }
         Text(text = label, color = color, style = MaterialTheme.typography.labelMedium)
     }
+}
+
+private fun formatReadingDuration(seconds: Int): String {
+    val total = seconds.coerceAtLeast(0)
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    return if (h > 0) "${h}小时${m}分钟" else "${m}分钟"
 }

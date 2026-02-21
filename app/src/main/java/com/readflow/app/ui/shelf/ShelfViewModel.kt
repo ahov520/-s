@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.readflow.app.domain.model.Book
 import com.readflow.app.domain.repository.BookRepository
+import com.readflow.app.domain.repository.ReaderSettingsRepository
 import com.readflow.app.domain.usecase.ImportBookUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -16,6 +17,8 @@ import kotlinx.coroutines.launch
 
 data class ShelfUiState(
     val books: List<Book> = emptyList(),
+    val dailyReadSeconds: Int = 0,
+    val streakDays: Int = 0,
     val isImporting: Boolean = false,
     val error: String? = null,
 )
@@ -23,6 +26,7 @@ data class ShelfUiState(
 @HiltViewModel
 class ShelfViewModel @Inject constructor(
     private val bookRepository: BookRepository,
+    private val settingsRepository: ReaderSettingsRepository,
     private val importBookUseCase: ImportBookUseCase,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ShelfUiState())
@@ -32,6 +36,16 @@ class ShelfViewModel @Inject constructor(
         viewModelScope.launch {
             bookRepository.observeBooks().collect { books ->
                 _uiState.update { it.copy(books = books) }
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.observeSettings().collect { settings ->
+                _uiState.update {
+                    it.copy(
+                        dailyReadSeconds = settings.dailyReadSeconds,
+                        streakDays = settings.streakDays,
+                    )
+                }
             }
         }
     }
