@@ -16,8 +16,10 @@ import com.readflow.app.domain.usecase.GetBookContentUseCase
 import com.readflow.app.domain.usecase.IndexChaptersUseCase
 import com.readflow.app.domain.usecase.PaginateContentUseCase
 import com.readflow.app.domain.usecase.PaginationLayout
+import com.readflow.app.domain.usecase.SearchInTextUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,9 +27,18 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 private const val PROGRESS_SAVE_DEBOUNCE = 3000L
+private const val SEARCH_DEBOUNCE = 300L
+private const val SEARCH_LIMIT = 200
+
+data class SearchResultUi(
+    val position: Int,
+    val snippet: String,
+    val chapterTitle: String?,
+)
 
 data class ReaderUiState(
     val book: Book? = null,
@@ -42,6 +53,11 @@ data class ReaderUiState(
     val isLoading: Boolean = true,
     val error: String? = null,
     val isMenuVisible: Boolean = true,
+    val isSearchPanelVisible: Boolean = false,
+    val isSearching: Boolean = false,
+    val searchQuery: String = "",
+    val searchResults: List<SearchResultUi> = emptyList(),
+    val searchTruncated: Boolean = false,
 )
 
 @HiltViewModel
@@ -53,6 +69,7 @@ class ReaderViewModel @Inject constructor(
     private val getBookContentUseCase: GetBookContentUseCase,
     private val indexChaptersUseCase: IndexChaptersUseCase,
     private val paginateContentUseCase: PaginateContentUseCase,
+    private val searchInTextUseCase: SearchInTextUseCase,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
@@ -63,6 +80,7 @@ class ReaderViewModel @Inject constructor(
     private var bookmarksJob: Job? = null
     private var chaptersJob: Job? = null
     private var currentLayout: PaginationLayout? = null
+    private var searchJob: Job? = null
 
     fun loadBook(bookId: String) {
         if (bookId.isBlank()) return
@@ -121,6 +139,11 @@ class ReaderViewModel @Inject constructor(
                     paragraphs = paragraphs,
                     currentPosition = book.currentPosition,
                     isLoading = false,
+                    searchQuery = "",
+                    searchResults = emptyList(),
+                    searchTruncated = false,
+                    isSearchPanelVisible = false,
+                    isSearching = false,
                 )
             }
 
@@ -204,6 +227,32 @@ class ReaderViewModel @Inject constructor(
         _uiState.update { it.copy(isMenuVisible = visible) }
     }
 
+    fun showSearchPanel() {
+        _uiState.update { it.copy(isSearchPanelVisible = true) }
+    }
+
+    fun hideSearchPanel() {
+        _uiState.update { it.copy(isSearchPanelVisible = false) }
+    }
+
+    fun onSearchQueryChange(query: String) {
+        _uiState.update { it.copy(searchQuery = query) }
+        searchJob?.cancel()
+        if (query.isBlank()) {
+            _uiState.update { it.copy(searchResults = emptyList(), searchTruncated = false, isSearching = false) }
+            return
+        }
+
+        searchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE)
+            executeSearch(query)
+        }
+    }
+
+    fun jumpToSearchResult(result: SearchResultUi) {
+        jumpToPosition(result.position)
+    }
+
     fun updateFontSize(value: Int) {
         viewModelScope.launch { settingsRepository.updateFontSize(value) }
     }
@@ -280,5 +329,38 @@ class ReaderViewModel @Inject constructor(
                 totalChars = state.content.length,
             )
         }
+    }
+
+    private suspend fun executeSearch(query: String) {
+        val state = _uiState.value
+        if (state.content.isBlank()) return
+
+        _uiState.update { it.copy(isSearching = true) }
+        val batch = withContext(Dispatchers.Default) {
+            searchInTextUseCase(
+                content = state.content,
+                query = query,
+                limit = SEARCH_LIMIT,
+            )
+        }
+        val chapters = _uiState.value.chapters
+        val mapped = batch.matches.map { match ->
+            SearchResultUi(
+                position = match.position,
+                snippet = match.snippet,
+                chapterTitle = chapterTitleForPosition(chapters, match.position),
+            )
+        }
+        _uiState.update {
+            it.copy(
+                isSearching = false,
+                searchResults = mapped,
+                searchTruncated = batch.truncated,
+            )
+        }
+    }
+
+    private fun chapterTitleForPosition(chapters: List<ChapterIndex>, position: Int): String? {
+        return chapters.firstOrNull { position in it.startChar until it.endChar }?.title
     }
 }

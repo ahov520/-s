@@ -29,6 +29,7 @@ import com.readflow.app.ui.reader.components.BookmarkSheet
 import com.readflow.app.ui.reader.components.ChapterListSheet
 import com.readflow.app.ui.reader.components.PageReader
 import com.readflow.app.ui.reader.components.ReaderToolbar
+import com.readflow.app.ui.reader.components.SearchSheet
 import com.readflow.app.ui.reader.components.ScrollReader
 import com.readflow.app.ui.settings.SettingsSheet
 import com.readflow.app.ui.theme.readingThemeFor
@@ -123,6 +124,7 @@ fun ReaderScreen(
             onAddBookmark = viewModel::addBookmark,
             onShowBookmarks = { showBookmarks = true },
             onShowChapters = { showChapters = true },
+            onShowSearch = viewModel::showSearchPanel,
             onShowSettings = { showSettings = true },
             onProgressChange = { ratio ->
                 val pos = (state.content.length * ratio).toInt()
@@ -166,6 +168,21 @@ fun ReaderScreen(
             onJumpToChapter = {
                 viewModel.jumpToChapter(it)
                 showChapters = false
+            },
+        )
+    }
+
+    if (state.isSearchPanelVisible) {
+        SearchSheet(
+            query = state.searchQuery,
+            isSearching = state.isSearching,
+            results = state.searchResults,
+            truncated = state.searchTruncated,
+            onDismiss = viewModel::hideSearchPanel,
+            onQueryChange = viewModel::onSearchQueryChange,
+            onJumpToResult = {
+                viewModel.jumpToSearchResult(it)
+                viewModel.hideSearchPanel()
             },
         )
     }
