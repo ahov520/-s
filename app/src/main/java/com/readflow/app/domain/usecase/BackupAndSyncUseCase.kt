@@ -95,9 +95,9 @@ class BackupAndSyncUseCase @Inject constructor(
         val root = JSONObject()
             .put("schema", 1)
             .put("createdAt", System.currentTimeMillis())
-            .put("books", books.toJsonArray())
-            .put("bookmarks", bookmarks.toJsonArray())
-            .put("chapters", chapters.toJsonArray())
+            .put("books", books.toBooksJsonArray())
+            .put("bookmarks", bookmarks.toBookmarksJsonArray())
+            .put("chapters", chapters.toChaptersJsonArray())
             .put("settings", JSONObject()
                 .put("fontSize", settings.fontSize)
                 .put("lineHeight", settings.lineHeight)
@@ -122,7 +122,7 @@ class BackupAndSyncUseCase @Inject constructor(
                 .put("reminderHour", settings.reminderHour)
                 .put("reminderMinute", settings.reminderMinute)
                 .put("bookGroups", JSONObject(settings.bookGroups))
-                .put("readingNotes", settings.readingNotes.toJsonArray())
+                .put("readingNotes", settings.readingNotes.toNotesJsonArray())
                 .put("cloudGistId", settings.cloudGistId)
                 .put("lastBackupPath", settings.lastBackupPath)
             )
@@ -278,7 +278,7 @@ class BackupAndSyncUseCase @Inject constructor(
     }
 }
 
-private fun List<Book>.toJsonArray(): JSONArray = JSONArray().apply {
+private fun List<Book>.toBooksJsonArray(): JSONArray = JSONArray().apply {
     forEach { book ->
         put(
             JSONObject()
@@ -299,7 +299,7 @@ private fun List<Book>.toJsonArray(): JSONArray = JSONArray().apply {
     }
 }
 
-private fun List<Bookmark>.toJsonArray(): JSONArray = JSONArray().apply {
+private fun List<Bookmark>.toBookmarksJsonArray(): JSONArray = JSONArray().apply {
     forEach { bookmark ->
         put(
             JSONObject()
@@ -312,7 +312,7 @@ private fun List<Bookmark>.toJsonArray(): JSONArray = JSONArray().apply {
     }
 }
 
-private fun List<ChapterIndex>.toJsonArray(): JSONArray = JSONArray().apply {
+private fun List<ChapterIndex>.toChaptersJsonArray(): JSONArray = JSONArray().apply {
     forEach { chapter ->
         put(
             JSONObject()
@@ -326,7 +326,7 @@ private fun List<ChapterIndex>.toJsonArray(): JSONArray = JSONArray().apply {
     }
 }
 
-private fun List<ReadingNote>.toJsonArray(): JSONArray = JSONArray().apply {
+private fun List<ReadingNote>.toNotesJsonArray(): JSONArray = JSONArray().apply {
     forEach { note ->
         put(
             JSONObject()
