@@ -104,6 +104,7 @@ dependencies {
 
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.juniversalchardet)
+    implementation(libs.google.material)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)
