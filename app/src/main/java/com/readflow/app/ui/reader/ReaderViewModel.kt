@@ -25,6 +25,7 @@ import com.readflow.app.domain.usecase.PaginateContentUseCase
 import com.readflow.app.domain.usecase.PaginationLayout
 import com.readflow.app.domain.usecase.SearchInTextUseCase
 import com.readflow.app.service.BackgroundAudioService
+import androidx.compose.runtime.Immutable
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -33,8 +34,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -55,6 +60,47 @@ data class SearchResultUi(
     val position: Int,
     val snippet: String,
     val chapterTitle: String?,
+)
+
+@Immutable
+data class ReaderContentState(
+    val book: Book? = null,
+    val content: String = "",
+    val paragraphs: List<String> = emptyList(),
+    val pages: List<String> = listOf(""),
+    val chapters: List<ChapterIndex> = emptyList(),
+    val bookmarks: List<Bookmark> = emptyList(),
+    val readingNotes: List<ReadingNote> = emptyList(),
+    val vocabularyWords: List<VocabularyWord> = emptyList(),
+    val aiSummary: String = "",
+    val aiReviewQuestions: List<String> = emptyList(),
+)
+
+@Immutable
+data class ReaderReadingState(
+    val currentPage: Int = 0,
+    val currentPosition: Int = 0,
+    val isLoading: Boolean = true,
+    val error: String? = null,
+)
+
+@Immutable
+data class ReaderSessionState(
+    val ttsState: TtsPlaybackState = TtsPlaybackState.IDLE,
+    val focusSessionSeconds: Int = 0,
+    val isFocusTimerRunning: Boolean = false,
+)
+
+@Immutable
+data class ReaderUiControlState(
+    val isMenuVisible: Boolean = true,
+    val isMistouchLocked: Boolean = false,
+    val isSearchPanelVisible: Boolean = false,
+    val isSearching: Boolean = false,
+    val searchQuery: String = "",
+    val searchResults: List<SearchResultUi> = emptyList(),
+    val searchTruncated: Boolean = false,
+    val isGeneratingAi: Boolean = false,
 )
 
 data class ReaderUiState(
@@ -100,6 +146,55 @@ class ReaderViewModel @Inject constructor(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
+
+    val contentState: StateFlow<ReaderContentState> = _uiState.map {
+        ReaderContentState(
+            book = it.book,
+            content = it.content,
+            paragraphs = it.paragraphs,
+            pages = it.pages,
+            chapters = it.chapters,
+            bookmarks = it.bookmarks,
+            readingNotes = it.readingNotes,
+            vocabularyWords = it.vocabularyWords,
+            aiSummary = it.aiSummary,
+            aiReviewQuestions = it.aiReviewQuestions,
+        )
+    }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ReaderContentState())
+
+    val readingState: StateFlow<ReaderReadingState> = _uiState.map {
+        ReaderReadingState(
+            currentPage = it.currentPage,
+            currentPosition = it.currentPosition,
+            isLoading = it.isLoading,
+            error = it.error,
+        )
+    }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ReaderReadingState())
+
+    val settingsState: StateFlow<ReadingSettings> = _uiState.map { it.settings }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ReadingSettings())
+
+    val sessionState: StateFlow<ReaderSessionState> = _uiState.map {
+        ReaderSessionState(
+            ttsState = it.ttsState,
+            focusSessionSeconds = it.focusSessionSeconds,
+            isFocusTimerRunning = it.isFocusTimerRunning,
+        )
+    }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ReaderSessionState())
+
+    val uiControlState: StateFlow<ReaderUiControlState> = _uiState.map {
+        ReaderUiControlState(
+            isMenuVisible = it.isMenuVisible,
+            isMistouchLocked = it.isMistouchLocked,
+            isSearchPanelVisible = it.isSearchPanelVisible,
+            isSearching = it.isSearching,
+            searchQuery = it.searchQuery,
+            searchResults = it.searchResults,
+            searchTruncated = it.searchTruncated,
+            isGeneratingAi = it.isGeneratingAi,
+        )
+    }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ReaderUiControlState())
 
     private var currentBookId: String? = null
     private var saveProgressJob: Job? = null

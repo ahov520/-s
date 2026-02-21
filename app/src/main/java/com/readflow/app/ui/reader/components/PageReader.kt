@@ -37,7 +37,7 @@ fun PageReader(
     )
 
     LaunchedEffect(currentPage, pages.size) {
-        if (pages.isNotEmpty() && pagerState.currentPage != currentPage) {
+        if (pages.isNotEmpty() && pagerState.currentPage != currentPage && !pagerState.isScrollInProgress) {
             pagerState.animateScrollToPage(currentPage.coerceIn(0, pages.lastIndex))
         }
     }

@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,7 +60,12 @@ fun ReaderScreen(
     viewModel: ReaderViewModel,
     onBack: () -> Unit,
 ) {
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val content by viewModel.contentState.collectAsStateWithLifecycle()
+    val reading by viewModel.readingState.collectAsStateWithLifecycle()
+    val settings by viewModel.settingsState.collectAsStateWithLifecycle()
+    val session by viewModel.sessionState.collectAsStateWithLifecycle()
+    val uiControl by viewModel.uiControlState.collectAsStateWithLifecycle()
+
     var showSettings by remember { mutableStateOf(false) }
     var showBookmarks by remember { mutableStateOf(false) }
     var showNotes by remember { mutableStateOf(false) }
@@ -75,12 +81,17 @@ fun ReaderScreen(
         viewModel.loadBook(bookId)
     }
 
-    val readingTheme = readingThemeFor(state.settings.bgColorKey)
-    val progress = if (state.content.isEmpty()) 0f else state.currentPosition.toFloat() / state.content.length
+    val readingTheme = readingThemeFor(settings.bgColorKey)
+    val progress by remember {
+        derivedStateOf {
+            if (content.content.isEmpty()) 0f
+            else reading.currentPosition.toFloat() / content.content.length
+        }
+    }
 
     DisposableEffect(
-        state.settings.immersiveEnabled,
-        state.settings.brightnessLocked,
+        settings.immersiveEnabled,
+        settings.brightnessLocked,
         activity,
         lifecycleOwner,
         originalBrightness,
@@ -91,7 +102,7 @@ fun ReaderScreen(
             val controller = WindowInsetsControllerCompat(window, decor)
 
             fun applyImmersiveState() {
-                if (state.settings.immersiveEnabled) {
+                if (settings.immersiveEnabled) {
                     WindowCompat.setDecorFitsSystemWindows(window, false)
                     controller.hide(WindowInsetsCompat.Type.systemBars())
                     controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -101,7 +112,7 @@ fun ReaderScreen(
                 }
 
                 val attrs = window.attributes
-                attrs.screenBrightness = if (state.settings.brightnessLocked) {
+                attrs.screenBrightness = if (settings.brightnessLocked) {
                     if (attrs.screenBrightness > 0f) attrs.screenBrightness else 0.55f
                 } else {
                     -1f
@@ -154,35 +165,35 @@ fun ReaderScreen(
         val widthPx = with(density) { maxWidth.roundToPx() }
         val heightPx = with(density) { maxHeight.roundToPx() }
 
-        LaunchedEffect(widthPx, heightPx, state.settings.fontSize, state.settings.lineHeight) {
+        LaunchedEffect(widthPx, heightPx, settings.fontSize, settings.lineHeight) {
             viewModel.updateLayout(widthPx = widthPx, heightPx = heightPx)
         }
 
-        if (state.isLoading) {
+        if (reading.isLoading) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-        } else if (state.error != null) {
+        } else if (reading.error != null) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(text = state.error.orEmpty())
+                Text(text = reading.error.orEmpty())
             }
         } else {
-            when (state.settings.pageMode) {
+            when (settings.pageMode) {
                 PageMode.SCROLL -> ScrollReader(
-                    paragraphs = state.paragraphs,
-                    fontSizeSp = state.settings.fontSize,
-                    lineHeight = state.settings.lineHeight,
+                    paragraphs = content.paragraphs,
+                    fontSizeSp = settings.fontSize,
+                    lineHeight = settings.lineHeight,
                     textColor = readingTheme.textColor,
-                    currentPosition = state.currentPosition,
+                    currentPosition = reading.currentPosition,
                     onToggleMenu = viewModel::toggleMenu,
                     onPositionChanged = viewModel::onScrollPositionChanged,
                 )
 
                 PageMode.PAGE -> PageReader(
-                    pages = state.pages,
-                    currentPage = state.currentPage,
-                    fontSizeSp = state.settings.fontSize,
-                    lineHeight = state.settings.lineHeight,
+                    pages = content.pages,
+                    currentPage = reading.currentPage,
+                    fontSizeSp = settings.fontSize,
+                    lineHeight = settings.lineHeight,
                     textColor = readingTheme.textColor,
                     onPageChanged = viewModel::onPageChanged,
                     onToggleMenu = viewModel::toggleMenu,
@@ -193,7 +204,7 @@ fun ReaderScreen(
         }
 
         AnimatedVisibility(
-            visible = !state.isMenuVisible,
+            visible = !uiControl.isMenuVisible,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 4.dp),
@@ -209,10 +220,10 @@ fun ReaderScreen(
         }
 
         ReaderToolbar(
-            visible = state.isMenuVisible,
-            title = state.book?.title.orEmpty(),
+            visible = uiControl.isMenuVisible,
+            title = content.book?.title.orEmpty(),
             progress = progress,
-            showPageActions = state.settings.pageMode == PageMode.PAGE,
+            showPageActions = settings.pageMode == PageMode.PAGE,
             onBack = onBack,
             onAddBookmark = viewModel::addBookmark,
             onShowBookmarks = { showBookmarks = true },
@@ -224,14 +235,14 @@ fun ReaderScreen(
             onShowSettings = { showSettings = true },
             onShowImmersive = { showImmersive = true },
             onProgressChange = { ratio ->
-                val pos = (state.content.length * ratio).toInt()
+                val pos = (content.content.length * ratio).toInt()
                 viewModel.jumpToPosition(pos)
             },
             onPrevPage = viewModel::previousPage,
             onNextPage = viewModel::nextPage,
         )
 
-        if (state.settings.mistouchGuardEnabled && state.isMistouchLocked) {
+        if (settings.mistouchGuardEnabled && uiControl.isMistouchLocked) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -252,7 +263,7 @@ fun ReaderScreen(
 
     if (showSettings) {
         SettingsSheet(
-            settings = state.settings,
+            settings = settings,
             onDismiss = { showSettings = false },
             onPageModeChange = viewModel::updatePageMode,
             onFontSizeChange = viewModel::updateFontSize,
@@ -264,7 +275,7 @@ fun ReaderScreen(
 
     if (showBookmarks) {
         BookmarkSheet(
-            bookmarks = state.bookmarks,
+            bookmarks = content.bookmarks,
             onDismiss = { showBookmarks = false },
             onAddBookmark = viewModel::addBookmark,
             onDeleteBookmark = viewModel::deleteBookmark,
@@ -277,7 +288,7 @@ fun ReaderScreen(
 
     if (showNotes) {
         ReadingNotesSheet(
-            notes = state.readingNotes,
+            notes = content.readingNotes,
             onDismiss = { showNotes = false },
             onAddNote = viewModel::addReadingNote,
             onDeleteNote = viewModel::deleteReadingNote,
@@ -290,7 +301,7 @@ fun ReaderScreen(
 
     if (showVocabulary) {
         VocabularySheet(
-            words = state.vocabularyWords,
+            words = content.vocabularyWords,
             onDismiss = { showVocabulary = false },
             onAddWord = viewModel::addVocabularyWord,
             onDeleteWord = viewModel::deleteVocabularyWord,
@@ -299,8 +310,8 @@ fun ReaderScreen(
 
     if (showChapters) {
         ChapterListSheet(
-            chapters = state.chapters,
-            currentPosition = state.currentPosition,
+            chapters = content.chapters,
+            currentPosition = reading.currentPosition,
             onDismiss = { showChapters = false },
             onJumpToChapter = {
                 viewModel.jumpToChapter(it)
@@ -309,12 +320,12 @@ fun ReaderScreen(
         )
     }
 
-    if (state.isSearchPanelVisible) {
+    if (uiControl.isSearchPanelVisible) {
         SearchSheet(
-            query = state.searchQuery,
-            isSearching = state.isSearching,
-            results = state.searchResults,
-            truncated = state.searchTruncated,
+            query = uiControl.searchQuery,
+            isSearching = uiControl.isSearching,
+            results = uiControl.searchResults,
+            truncated = uiControl.searchTruncated,
             onDismiss = viewModel::hideSearchPanel,
             onQueryChange = viewModel::onSearchQueryChange,
             onJumpToResult = {
@@ -326,9 +337,9 @@ fun ReaderScreen(
 
     if (showAiAssistant) {
         AiAssistantSheet(
-            summary = state.aiSummary,
-            questions = state.aiReviewQuestions,
-            isGenerating = state.isGeneratingAi,
+            summary = content.aiSummary,
+            questions = content.aiReviewQuestions,
+            isGenerating = uiControl.isGeneratingAi,
             onDismiss = { showAiAssistant = false },
             onGenerate = viewModel::generateLocalAiSummary,
         )
@@ -336,11 +347,11 @@ fun ReaderScreen(
 
     if (showImmersive) {
         ImmersiveSheet(
-            settings = state.settings,
-            ttsState = state.ttsState,
-            focusSessionSeconds = state.focusSessionSeconds,
-            isFocusTimerRunning = state.isFocusTimerRunning,
-            isMistouchLocked = state.isMistouchLocked,
+            settings = settings,
+            ttsState = session.ttsState,
+            focusSessionSeconds = session.focusSessionSeconds,
+            isFocusTimerRunning = session.isFocusTimerRunning,
+            isMistouchLocked = uiControl.isMistouchLocked,
             onDismiss = { showImmersive = false },
             onStartTts = viewModel::startTts,
             onPauseTts = viewModel::pauseTts,

@@ -63,7 +63,10 @@ fun ScrollReader(
             }
             .padding(horizontal = 24.dp, vertical = 20.dp)
     ) {
-        itemsIndexed(paragraphs) { _, paragraph ->
+        itemsIndexed(
+            items = paragraphs,
+            key = { index, _ -> index }
+        ) { _, paragraph ->
             Text(
                 text = paragraph,
                 style = TextStyle(
