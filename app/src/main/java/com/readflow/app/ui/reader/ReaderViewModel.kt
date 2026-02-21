@@ -13,6 +13,7 @@ import com.readflow.app.domain.model.ReadingNote
 import com.readflow.app.domain.model.ReadingSettings
 import com.readflow.app.domain.model.TtsProvider
 import com.readflow.app.domain.model.ThemeMode
+import com.readflow.app.domain.model.VocabularyWord
 import com.readflow.app.domain.repository.BookRepository
 import com.readflow.app.domain.repository.BookmarkRepository
 import com.readflow.app.domain.repository.ChapterIndexRepository
@@ -48,6 +49,7 @@ private const val SEARCH_LIMIT = 200
 private const val FOCUS_TICK_SECONDS = 1
 private const val TTS_PROGRESS_STEP = 35
 private const val STATS_FLUSH_INTERVAL_SECONDS = 20
+private const val AI_SNIPPET_WINDOW = 1200
 
 data class SearchResultUi(
     val position: Int,
@@ -74,10 +76,14 @@ data class ReaderUiState(
     val searchResults: List<SearchResultUi> = emptyList(),
     val searchTruncated: Boolean = false,
     val readingNotes: List<ReadingNote> = emptyList(),
+    val vocabularyWords: List<VocabularyWord> = emptyList(),
     val ttsState: TtsPlaybackState = TtsPlaybackState.IDLE,
     val focusSessionSeconds: Int = 0,
     val isFocusTimerRunning: Boolean = false,
     val isMistouchLocked: Boolean = false,
+    val aiSummary: String = "",
+    val aiReviewQuestions: List<String> = emptyList(),
+    val isGeneratingAi: Boolean = false,
 )
 
 @HiltViewModel
@@ -149,10 +155,16 @@ class ReaderViewModel @Inject constructor(
                         .filter { it.bookId == currentBookId }
                         .sortedByDescending { it.createdAt }
                         .toList()
+                    val words = settings.vocabularyWords
+                        .asSequence()
+                        .filter { it.bookId == currentBookId }
+                        .sortedByDescending { it.createdAt }
+                        .toList()
                     state.copy(
                         settings = settings,
                         isMistouchLocked = if (settings.mistouchGuardEnabled) state.isMistouchLocked else false,
                         readingNotes = notes,
+                        vocabularyWords = words,
                     )
                 }
                 ttsController?.setRate(settings.ttsRate)
@@ -194,8 +206,6 @@ class ReaderViewModel @Inject constructor(
 
             val paragraphs = content
                 .split("\n")
-                .map { it.trimEnd() }
-                .filter { it.isNotBlank() }
                 .ifEmpty { listOf(content) }
 
             _uiState.update {
@@ -214,6 +224,9 @@ class ReaderViewModel @Inject constructor(
                     focusSessionSeconds = 0,
                     isFocusTimerRunning = false,
                     isMistouchLocked = _uiState.value.settings.mistouchGuardEnabled,
+                    aiSummary = "",
+                    aiReviewQuestions = emptyList(),
+                    isGeneratingAi = false,
                 )
             }
 
@@ -467,6 +480,46 @@ class ReaderViewModel @Inject constructor(
         jumpToPosition(note.startChar)
     }
 
+    fun addVocabularyWord(wordText: String, meaningText: String) {
+        val bookId = currentBookId ?: return
+        val word = wordText.trim()
+        val meaning = meaningText.trim()
+        if (word.isBlank()) return
+        val sentence = buildSnippetAroundCurrent()
+        val item = VocabularyWord(
+            id = UUID.randomUUID().toString(),
+            bookId = bookId,
+            word = word,
+            meaning = meaning,
+            sentence = sentence,
+            createdAt = System.currentTimeMillis(),
+        )
+        viewModelScope.launch { settingsRepository.upsertVocabularyWord(item) }
+    }
+
+    fun deleteVocabularyWord(wordId: String) {
+        viewModelScope.launch { settingsRepository.deleteVocabularyWord(wordId) }
+    }
+
+    fun generateLocalAiSummary() {
+        val state = _uiState.value
+        if (state.content.isBlank()) return
+        _uiState.update { it.copy(isGeneratingAi = true) }
+        viewModelScope.launch {
+            val summary = withContext(Dispatchers.Default) {
+                val snippet = buildSnippetAroundCurrent()
+                summarizeSnippet(snippet)
+            }
+            _uiState.update {
+                it.copy(
+                    isGeneratingAi = false,
+                    aiSummary = summary.first,
+                    aiReviewQuestions = summary.second,
+                )
+            }
+        }
+    }
+
     fun onAppBackgrounded() {
         shouldResumeFocusOnForeground = _uiState.value.isFocusTimerRunning
         if (_uiState.value.isFocusTimerRunning) {
@@ -671,6 +724,45 @@ class ReaderViewModel @Inject constructor(
 
     private fun chapterTitleForPosition(chapters: List<ChapterIndex>, position: Int): String? {
         return chapters.firstOrNull { position in it.startChar until it.endChar }?.title
+    }
+
+    private fun buildSnippetAroundCurrent(): String {
+        val state = _uiState.value
+        if (state.content.isBlank()) return ""
+        val center = state.currentPosition.coerceIn(0, state.content.lastIndex)
+        val start = (center - AI_SNIPPET_WINDOW).coerceAtLeast(0)
+        val end = (center + AI_SNIPPET_WINDOW).coerceAtMost(state.content.length)
+        return state.content.substring(start, end).trim()
+    }
+
+    private fun summarizeSnippet(snippet: String): Pair<String, List<String>> {
+        if (snippet.isBlank()) return "当前片段暂无可总结内容。" to emptyList()
+        val normalized = snippet
+            .replace("\r", "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        val sentences = normalized
+            .split(Regex("(?<=[。！？.!?])"))
+            .map { it.trim() }
+            .filter { it.length >= 8 }
+        val keySentences = when {
+            sentences.size >= 3 -> listOf(sentences.first(), sentences[sentences.size / 2], sentences.last())
+            sentences.isNotEmpty() -> sentences
+            else -> listOf(normalized.take(180))
+        }
+        val summary = buildString {
+            append("本段要点：")
+            keySentences.forEachIndexed { index, line ->
+                append("\n${index + 1}. ")
+                append(line.take(90))
+            }
+        }
+        val review = listOf(
+            "这一段最关键的冲突或转折是什么？",
+            "主角在本段做出的决定会带来什么后果？",
+            "你会如何用两句话复述本段核心内容？",
+        )
+        return summary to review
     }
 
     override fun onCleared() {

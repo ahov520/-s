@@ -4,12 +4,16 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.readflow.app.domain.model.Book
+import com.readflow.app.domain.model.BookSubscription
 import com.readflow.app.domain.model.Bookmark
 import com.readflow.app.domain.model.ChapterIndex
+import com.readflow.app.domain.model.CloudSyncProvider
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.domain.model.ReadingNote
+import com.readflow.app.domain.model.SyncConflict
 import com.readflow.app.domain.model.ThemeMode
 import com.readflow.app.domain.model.TtsProvider
+import com.readflow.app.domain.model.VocabularyWord
 import com.readflow.app.domain.repository.BookRepository
 import com.readflow.app.domain.repository.BookmarkRepository
 import com.readflow.app.domain.repository.ChapterIndexRepository
@@ -19,6 +23,8 @@ import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Base64
+import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -70,18 +76,35 @@ class BackupAndSyncUseCase @Inject constructor(
             ensureNetworkAvailable()
             val settings = settingsRepository.observeSettings().first()
             val token = settings.cloudSyncToken.trim()
-            if (token.isBlank()) error("请先填写 GitHub Token")
+            if (token.isBlank()) error("请先填写云同步 Token")
             val payload = buildBackupPayload()
-            val gistId = if (settings.cloudGistId.isBlank()) {
-                val newId = createBackupGist(token, payload)
-                settingsRepository.updateCloudSyncConfig(token, newId)
-                newId
-            } else {
-                patchBackupGist(token, settings.cloudGistId.trim(), payload)
-                settings.cloudGistId.trim()
+            val cloudRef = when (settings.cloudProvider) {
+                CloudSyncProvider.GITHUB_GIST -> {
+                    val gistId = if (settings.cloudGistId.isBlank()) {
+                        val newId = createBackupGist(token, payload)
+                        settingsRepository.updateCloudSyncConfig(token, newId)
+                        newId
+                    } else {
+                        patchBackupGist(token, settings.cloudGistId.trim(), payload)
+                        settings.cloudGistId.trim()
+                    }
+                    "https://gist.github.com/$gistId"
+                }
+
+                CloudSyncProvider.WEBDAV -> {
+                    uploadToWebDav(settings, token, payload)
+                }
+
+                CloudSyncProvider.ONEDRIVE -> {
+                    uploadToOneDrive(settings, token, payload)
+                }
+
+                CloudSyncProvider.DROPBOX -> {
+                    uploadToDropbox(settings, token, payload)
+                }
             }
             settingsRepository.updateLastSyncAt(System.currentTimeMillis())
-            "https://gist.github.com/$gistId"
+            cloudRef
         }
     }
 
@@ -90,12 +113,21 @@ class BackupAndSyncUseCase @Inject constructor(
             ensureNetworkAvailable()
             val settings = settingsRepository.observeSettings().first()
             val token = settings.cloudSyncToken.trim()
-            val gistId = settings.cloudGistId.trim()
-            if (token.isBlank() || gistId.isBlank()) error("请先填写 GitHub Token 和 Gist ID")
-            val payload = fetchBackupGistContent(token, gistId)
+            if (token.isBlank()) error("请先填写云同步 Token")
+            val payload = when (settings.cloudProvider) {
+                CloudSyncProvider.GITHUB_GIST -> {
+                    val gistId = settings.cloudGistId.trim()
+                    if (gistId.isBlank()) error("请先填写 Gist ID")
+                    fetchBackupGistContent(token, gistId)
+                }
+
+                CloudSyncProvider.WEBDAV -> fetchFromWebDav(settings, token)
+                CloudSyncProvider.ONEDRIVE -> fetchFromOneDrive(settings, token)
+                CloudSyncProvider.DROPBOX -> fetchFromDropbox(settings, token)
+            }
             restoreBackupPayload(payload, mode)
             settingsRepository.updateLastSyncAt(System.currentTimeMillis())
-            gistId
+            settings.cloudProvider.name
         }
     }
 
@@ -136,6 +168,14 @@ class BackupAndSyncUseCase @Inject constructor(
                 .put("reminderMinute", settings.reminderMinute)
                 .put("bookGroups", JSONObject(settings.bookGroups))
                 .put("readingNotes", settings.readingNotes.toNotesJsonArray())
+                .put("vocabularyWords", settings.vocabularyWords.toVocabularyJsonArray())
+                .put("syncConflicts", settings.syncConflicts.toSyncConflictsJsonArray())
+                .put("bookSubscriptions", settings.bookSubscriptions.toSubscriptionsJsonArray())
+                .put("offlineCachedBookIds", JSONArray(settings.offlineCachedBookIds.sorted()))
+                .put("cloudProvider", settings.cloudProvider.name)
+                .put("cloudWebDavEndpoint", settings.cloudWebDavEndpoint)
+                .put("cloudWebDavUsername", settings.cloudWebDavUsername)
+                .put("cloudRemotePath", settings.cloudRemotePath)
                 .put("cloudGistId", settings.cloudGistId)
                 .put("lastBackupPath", settings.lastBackupPath)
             )
@@ -157,14 +197,16 @@ class BackupAndSyncUseCase @Inject constructor(
 
             chapterIndexRepository.deleteAllChapters()
             if (chapters.isNotEmpty()) chapterIndexRepository.replaceAllChapters(chapters)
+            settingsRepository.replaceSyncConflicts(emptyList())
         } else {
-            val mergedBooks = mergeBooksById(bookRepository.getAllBooks(), books)
+            val (mergedBooks, conflicts) = mergeBooksWithConflicts(bookRepository.getAllBooks(), books)
             val mergedBookmarks = mergeBookmarksById(bookmarkRepository.getAllBookmarks(), bookmarks)
             val mergedChapters = mergeChaptersById(chapterIndexRepository.getAllChapters(), chapters)
 
             if (mergedBooks.isNotEmpty()) bookRepository.upsertBooks(mergedBooks)
             if (mergedBookmarks.isNotEmpty()) bookmarkRepository.addBookmarks(mergedBookmarks)
             if (mergedChapters.isNotEmpty()) chapterIndexRepository.replaceAllChapters(mergedChapters)
+            settingsRepository.replaceSyncConflicts(conflicts)
         }
 
         val settingsJson = root.optJSONObject("settings") ?: JSONObject()
@@ -213,12 +255,31 @@ class BackupAndSyncUseCase @Inject constructor(
             )
             settingsRepository.replaceBookGroups(settings.optJSONObject("bookGroups").toBookGroups())
             settingsRepository.replaceReadingNotes(settings.optJSONArray("readingNotes").toReadingNotes())
+            settingsRepository.replaceVocabularyWords(settings.optJSONArray("vocabularyWords").toVocabularyWords())
+            settingsRepository.replaceBookSubscriptions(settings.optJSONArray("bookSubscriptions").toSubscriptions())
+            settingsRepository.replaceOfflineCachedBookIds(settings.optJSONArray("offlineCachedBookIds").toOfflineBookIds())
+            settingsRepository.replaceSyncConflicts(settings.optJSONArray("syncConflicts").toSyncConflicts())
+            settingsRepository.updateCloudProvider(settings.optString("cloudProvider").toCloudSyncProvider())
+            settingsRepository.updateCloudWebDavConfig(
+                endpoint = settings.optString("cloudWebDavEndpoint"),
+                username = settings.optString("cloudWebDavUsername"),
+                remotePath = settings.optString("cloudRemotePath", "readflow-backup.json"),
+            )
         } else {
             val current = settingsRepository.observeSettings().first()
             val mergedGroups = mergeBookGroups(current.bookGroups, settings.optJSONObject("bookGroups").toBookGroups())
             val mergedNotes = mergeReadingNotes(current.readingNotes, settings.optJSONArray("readingNotes").toReadingNotes())
+            val mergedWords = mergeVocabularyWords(current.vocabularyWords, settings.optJSONArray("vocabularyWords").toVocabularyWords())
+            val mergedSubscriptions = mergeSubscriptions(
+                current.bookSubscriptions,
+                settings.optJSONArray("bookSubscriptions").toSubscriptions(),
+            )
+            val mergedOfflineIds = current.offlineCachedBookIds + settings.optJSONArray("offlineCachedBookIds").toOfflineBookIds()
             settingsRepository.replaceBookGroups(mergedGroups)
             settingsRepository.replaceReadingNotes(mergedNotes)
+            settingsRepository.replaceVocabularyWords(mergedWords)
+            settingsRepository.replaceBookSubscriptions(mergedSubscriptions)
+            settingsRepository.replaceOfflineCachedBookIds(mergedOfflineIds)
         }
 
         val currentSettings = settingsRepository.observeSettings().first()
@@ -289,6 +350,75 @@ class BackupAndSyncUseCase @Inject constructor(
         return content
     }
 
+    private suspend fun uploadToWebDav(settings: com.readflow.app.domain.model.ReadingSettings, token: String, payload: String): String {
+        val endpoint = settings.cloudWebDavEndpoint.trim().trimEnd('/')
+        if (endpoint.isBlank()) error("请填写 WebDAV 地址")
+        val remotePath = settings.cloudRemotePath.trim().ifBlank { "readflow-backup.json" }
+        val url = if (remotePath.startsWith("/")) "$endpoint$remotePath" else "$endpoint/$remotePath"
+        requestWebDav(
+            method = "PUT",
+            url = url,
+            username = settings.cloudWebDavUsername.trim(),
+            token = token,
+            body = payload,
+        )
+        return url
+    }
+
+    private suspend fun fetchFromWebDav(settings: com.readflow.app.domain.model.ReadingSettings, token: String): String {
+        val endpoint = settings.cloudWebDavEndpoint.trim().trimEnd('/')
+        if (endpoint.isBlank()) error("请填写 WebDAV 地址")
+        val remotePath = settings.cloudRemotePath.trim().ifBlank { "readflow-backup.json" }
+        val url = if (remotePath.startsWith("/")) "$endpoint$remotePath" else "$endpoint/$remotePath"
+        return requestWebDav(
+            method = "GET",
+            url = url,
+            username = settings.cloudWebDavUsername.trim(),
+            token = token,
+            body = null,
+        )
+    }
+
+    private suspend fun uploadToOneDrive(settings: com.readflow.app.domain.model.ReadingSettings, token: String, payload: String): String {
+        val remotePath = settings.cloudRemotePath.trim().ifBlank { "readflow-backup.json" }
+        val encodedPath = remotePath.trimStart('/').replace(" ", "%20")
+        val url = "https://graph.microsoft.com/v1.0/me/drive/special/approot:/$encodedPath:/content"
+        requestBearerJson(
+            method = "PUT",
+            url = url,
+            token = token,
+            body = payload,
+        )
+        return "onedrive://$remotePath"
+    }
+
+    private suspend fun fetchFromOneDrive(settings: com.readflow.app.domain.model.ReadingSettings, token: String): String {
+        val remotePath = settings.cloudRemotePath.trim().ifBlank { "readflow-backup.json" }
+        val encodedPath = remotePath.trimStart('/').replace(" ", "%20")
+        val url = "https://graph.microsoft.com/v1.0/me/drive/special/approot:/$encodedPath:/content"
+        return requestBearerJson(
+            method = "GET",
+            url = url,
+            token = token,
+            body = null,
+        )
+    }
+
+    private suspend fun uploadToDropbox(settings: com.readflow.app.domain.model.ReadingSettings, token: String, payload: String): String {
+        val remotePath = settings.cloudRemotePath.trim().ifBlank { "/readflow-backup.json" }.let {
+            if (it.startsWith("/")) it else "/$it"
+        }
+        requestDropboxUpload(token = token, path = remotePath, payload = payload)
+        return "dropbox://$remotePath"
+    }
+
+    private suspend fun fetchFromDropbox(settings: com.readflow.app.domain.model.ReadingSettings, token: String): String {
+        val remotePath = settings.cloudRemotePath.trim().ifBlank { "/readflow-backup.json" }.let {
+            if (it.startsWith("/")) it else "/$it"
+        }
+        return requestDropboxDownload(token = token, path = remotePath)
+    }
+
     private suspend fun requestGitHub(method: String, url: String, token: String, body: String?): String {
         var delayMs = 700L
         repeat(3) { attempt ->
@@ -339,6 +469,189 @@ class BackupAndSyncUseCase @Inject constructor(
             throw IOException("GitHub API 失败($code): $payload")
         }
         return payload
+    }
+
+    private suspend fun requestBearerJson(method: String, url: String, token: String, body: String?): String {
+        var delayMs = 700L
+        repeat(3) { attempt ->
+            val result = runCatching { requestBearerJsonOnce(method, url, token, body) }
+            if (result.isSuccess) return result.getOrThrow()
+            val throwable = result.exceptionOrNull() ?: error("未知错误")
+            val retryable = throwable is RetryableHttpException || throwable is IOException
+            if (!retryable || attempt == 2) throw throwable
+            delay(delayMs)
+            delayMs *= 2
+        }
+        error("云端请求失败")
+    }
+
+    private fun requestBearerJsonOnce(method: String, url: String, token: String, body: String?): String {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            setRequestProperty("Authorization", "Bearer $token")
+            setRequestProperty("Accept", "application/json, text/plain, */*")
+            connectTimeout = 15000
+            readTimeout = 20000
+            if (body != null) {
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            }
+        }
+
+        if (body != null) {
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+        }
+        val code = conn.responseCode
+        val payload = (if (code in 200..299) conn.inputStream else conn.errorStream)
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { it.readText() }
+            .orEmpty()
+        conn.disconnect()
+        if (code !in 200..299) {
+            if (code == 429 || code >= 500) throw RetryableHttpException(code, payload)
+            throw IOException("云端 API 失败($code): $payload")
+        }
+        return payload
+    }
+
+    private suspend fun requestWebDav(
+        method: String,
+        url: String,
+        username: String,
+        token: String,
+        body: String?,
+    ): String {
+        var delayMs = 700L
+        repeat(3) { attempt ->
+            val result = runCatching {
+                requestWebDavOnce(method, url, username, token, body)
+            }
+            if (result.isSuccess) return result.getOrThrow()
+            val throwable = result.exceptionOrNull() ?: error("未知错误")
+            val retryable = throwable is RetryableHttpException || throwable is IOException
+            if (!retryable || attempt == 2) throw throwable
+            delay(delayMs)
+            delayMs *= 2
+        }
+        error("WebDAV 请求失败")
+    }
+
+    private fun requestWebDavOnce(
+        method: String,
+        url: String,
+        username: String,
+        token: String,
+        body: String?,
+    ): String {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            if (username.isNotBlank()) {
+                val credentials = "$username:$token"
+                val auth = Base64.getEncoder().encodeToString(credentials.toByteArray(Charsets.UTF_8))
+                setRequestProperty("Authorization", "Basic $auth")
+            } else {
+                setRequestProperty("Authorization", "Bearer $token")
+            }
+            setRequestProperty("Accept", "application/json, text/plain, */*")
+            connectTimeout = 15000
+            readTimeout = 20000
+            if (body != null) {
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            }
+        }
+
+        if (body != null) {
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+        }
+        val code = conn.responseCode
+        val payload = (if (code in 200..299) conn.inputStream else conn.errorStream)
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { it.readText() }
+            .orEmpty()
+        conn.disconnect()
+        if (code !in 200..299) {
+            if (code == 429 || code >= 500) throw RetryableHttpException(code, payload)
+            throw IOException("WebDAV 失败($code): $payload")
+        }
+        return payload
+    }
+
+    private suspend fun requestDropboxUpload(token: String, path: String, payload: String) {
+        var delayMs = 700L
+        repeat(3) { attempt ->
+            val result = runCatching { requestDropboxUploadOnce(token, path, payload) }
+            if (result.isSuccess) return
+            val throwable = result.exceptionOrNull() ?: error("未知错误")
+            val retryable = throwable is RetryableHttpException || throwable is IOException
+            if (!retryable || attempt == 2) throw throwable
+            delay(delayMs)
+            delayMs *= 2
+        }
+    }
+
+    private fun requestDropboxUploadOnce(token: String, path: String, payload: String) {
+        val conn = (URL("https://content.dropboxapi.com/2/files/upload").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            setRequestProperty("Authorization", "Bearer $token")
+            setRequestProperty("Dropbox-API-Arg", JSONObject()
+                .put("path", path)
+                .put("mode", "overwrite")
+                .put("autorename", false)
+                .put("mute", true)
+                .toString()
+            )
+            setRequestProperty("Content-Type", "application/octet-stream")
+            connectTimeout = 15000
+            readTimeout = 20000
+            doOutput = true
+        }
+        conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+        val code = conn.responseCode
+        val response = (if (code in 200..299) conn.inputStream else conn.errorStream)
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { it.readText() }
+            .orEmpty()
+        conn.disconnect()
+        if (code !in 200..299) {
+            if (code == 429 || code >= 500) throw RetryableHttpException(code, response)
+            throw IOException("Dropbox 上传失败($code): $response")
+        }
+    }
+
+    private suspend fun requestDropboxDownload(token: String, path: String): String {
+        var delayMs = 700L
+        repeat(3) { attempt ->
+            val result = runCatching { requestDropboxDownloadOnce(token, path) }
+            if (result.isSuccess) return result.getOrThrow()
+            val throwable = result.exceptionOrNull() ?: error("未知错误")
+            val retryable = throwable is RetryableHttpException || throwable is IOException
+            if (!retryable || attempt == 2) throw throwable
+            delay(delayMs)
+            delayMs *= 2
+        }
+        error("Dropbox 下载失败")
+    }
+
+    private fun requestDropboxDownloadOnce(token: String, path: String): String {
+        val conn = (URL("https://content.dropboxapi.com/2/files/download").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            setRequestProperty("Authorization", "Bearer $token")
+            setRequestProperty("Dropbox-API-Arg", JSONObject().put("path", path).toString())
+            connectTimeout = 15000
+            readTimeout = 20000
+        }
+        val code = conn.responseCode
+        val response = (if (code in 200..299) conn.inputStream else conn.errorStream)
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { it.readText() }
+            .orEmpty()
+        conn.disconnect()
+        if (code !in 200..299) {
+            if (code == 429 || code >= 500) throw RetryableHttpException(code, response)
+            throw IOException("Dropbox 下载失败($code): $response")
+        }
+        return response
     }
 
     private fun ensureNetworkAvailable() {
@@ -416,6 +729,50 @@ private fun List<ReadingNote>.toNotesJsonArray(): JSONArray = JSONArray().apply 
                 .put("quote", note.quote)
                 .put("note", note.note)
                 .put("createdAt", note.createdAt)
+        )
+    }
+}
+
+private fun List<VocabularyWord>.toVocabularyJsonArray(): JSONArray = JSONArray().apply {
+    forEach { word ->
+        put(
+            JSONObject()
+                .put("id", word.id)
+                .put("bookId", word.bookId)
+                .put("word", word.word)
+                .put("meaning", word.meaning)
+                .put("sentence", word.sentence)
+                .put("createdAt", word.createdAt)
+        )
+    }
+}
+
+private fun List<SyncConflict>.toSyncConflictsJsonArray(): JSONArray = JSONArray().apply {
+    forEach { conflict ->
+        put(
+            JSONObject()
+                .put("id", conflict.id)
+                .put("bookId", conflict.bookId)
+                .put("bookTitle", conflict.bookTitle)
+                .put("localPosition", conflict.localPosition)
+                .put("localProgress", conflict.localProgress.toDouble())
+                .put("remotePosition", conflict.remotePosition)
+                .put("remoteProgress", conflict.remoteProgress.toDouble())
+                .put("createdAt", conflict.createdAt)
+        )
+    }
+}
+
+private fun List<BookSubscription>.toSubscriptionsJsonArray(): JSONArray = JSONArray().apply {
+    forEach { subscription ->
+        put(
+            JSONObject()
+                .put("bookId", subscription.bookId)
+                .put("sourceUrl", subscription.sourceUrl)
+                .put("etag", subscription.etag)
+                .put("lastModified", subscription.lastModified)
+                .put("hasUpdate", subscription.hasUpdate)
+                .put("lastCheckedAt", subscription.lastCheckedAt)
         )
     }
 }
@@ -515,6 +872,83 @@ private fun JSONArray?.toReadingNotes(): List<ReadingNote> {
     }
 }
 
+private fun JSONArray?.toVocabularyWords(): List<VocabularyWord> {
+    if (this == null) return emptyList()
+    return buildList {
+        for (i in 0 until length()) {
+            val o = optJSONObject(i) ?: continue
+            val id = o.optString("id")
+            val word = o.optString("word")
+            if (id.isBlank() || word.isBlank()) continue
+            add(
+                VocabularyWord(
+                    id = id,
+                    bookId = o.optString("bookId"),
+                    word = word,
+                    meaning = o.optString("meaning"),
+                    sentence = o.optString("sentence"),
+                    createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+                )
+            )
+        }
+    }
+}
+
+private fun JSONArray?.toSyncConflicts(): List<SyncConflict> {
+    if (this == null) return emptyList()
+    return buildList {
+        for (i in 0 until length()) {
+            val o = optJSONObject(i) ?: continue
+            val bookId = o.optString("bookId")
+            if (bookId.isBlank()) continue
+            add(
+                SyncConflict(
+                    id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
+                    bookId = bookId,
+                    bookTitle = o.optString("bookTitle", "未知书籍"),
+                    localPosition = o.optInt("localPosition", 0),
+                    localProgress = o.optDouble("localProgress", 0.0).toFloat(),
+                    remotePosition = o.optInt("remotePosition", 0),
+                    remoteProgress = o.optDouble("remoteProgress", 0.0).toFloat(),
+                    createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+                )
+            )
+        }
+    }
+}
+
+private fun JSONArray?.toSubscriptions(): List<BookSubscription> {
+    if (this == null) return emptyList()
+    return buildList {
+        for (i in 0 until length()) {
+            val o = optJSONObject(i) ?: continue
+            val bookId = o.optString("bookId")
+            val sourceUrl = o.optString("sourceUrl")
+            if (bookId.isBlank() || sourceUrl.isBlank()) continue
+            add(
+                BookSubscription(
+                    bookId = bookId,
+                    sourceUrl = sourceUrl,
+                    etag = o.optString("etag"),
+                    lastModified = o.optString("lastModified"),
+                    hasUpdate = o.optBoolean("hasUpdate", false),
+                    lastCheckedAt = o.optLong("lastCheckedAt", 0L),
+                )
+            )
+        }
+    }
+}
+
+private fun JSONArray?.toOfflineBookIds(): Set<String> {
+    if (this == null) return emptySet()
+    return buildSet {
+        for (i in 0 until length()) {
+            val id = optString(i)
+            if (id.isNotBlank()) add(id)
+        }
+    }
+}
+
 private fun JSONObject?.toBookGroups(): Map<String, String> {
     if (this == null) return emptyMap()
     val out = linkedMapOf<String, String>()
@@ -532,6 +966,52 @@ internal fun mergeBooksById(existing: List<Book>, incoming: List<Book>): List<Bo
     existing.forEach { merged[it.id] = it }
     incoming.forEach { merged[it.id] = it }
     return merged.values.toList()
+}
+
+internal fun mergeBooksWithConflicts(
+    existing: List<Book>,
+    incoming: List<Book>,
+): Pair<List<Book>, List<SyncConflict>> {
+    if (incoming.isEmpty()) return existing to emptyList()
+    val existingById = existing.associateBy { it.id }
+    val merged = linkedMapOf<String, Book>()
+    val conflicts = mutableListOf<SyncConflict>()
+
+    existing.forEach { merged[it.id] = it }
+
+    incoming.forEach { remote ->
+        val local = existingById[remote.id]
+        if (local == null) {
+            merged[remote.id] = remote
+            return@forEach
+        }
+
+        val hasProgressConflict =
+            kotlin.math.abs(local.progress - remote.progress) >= 0.02f &&
+                kotlin.math.abs(local.currentPosition - remote.currentPosition) >= 120
+
+        if (hasProgressConflict) {
+            // 合并模式默认保留本地进度，冲突进入待处理中心。
+            merged[local.id] = local.copy(
+                updatedAt = maxOf(local.updatedAt, remote.updatedAt),
+                lastReadAt = maxOf(local.lastReadAt ?: 0L, remote.lastReadAt ?: 0L).takeIf { it > 0L },
+            )
+            conflicts += SyncConflict(
+                id = "${local.id}-${remote.updatedAt}-${System.currentTimeMillis()}",
+                bookId = local.id,
+                bookTitle = if (local.title.isNotBlank()) local.title else remote.title,
+                localPosition = local.currentPosition,
+                localProgress = local.progress,
+                remotePosition = remote.currentPosition,
+                remoteProgress = remote.progress,
+                createdAt = System.currentTimeMillis(),
+            )
+        } else {
+            merged[local.id] = if (remote.updatedAt >= local.updatedAt) remote else local
+        }
+    }
+
+    return merged.values.toList() to conflicts
 }
 
 internal fun mergeBookmarksById(existing: List<Bookmark>, incoming: List<Bookmark>): List<Bookmark> {
@@ -566,6 +1046,26 @@ internal fun mergeBookGroups(existing: Map<String, String>, incoming: Map<String
     return merged
 }
 
+internal fun mergeVocabularyWords(
+    existing: List<VocabularyWord>,
+    incoming: List<VocabularyWord>,
+): List<VocabularyWord> {
+    val merged = linkedMapOf<String, VocabularyWord>()
+    existing.forEach { merged[it.id] = it }
+    incoming.forEach { merged[it.id] = it }
+    return merged.values.sortedByDescending { it.createdAt }
+}
+
+internal fun mergeSubscriptions(
+    existing: List<BookSubscription>,
+    incoming: List<BookSubscription>,
+): List<BookSubscription> {
+    val merged = linkedMapOf<String, BookSubscription>()
+    existing.forEach { merged[it.bookId] = it }
+    incoming.forEach { merged[it.bookId] = it }
+    return merged.values.sortedByDescending { it.lastCheckedAt }
+}
+
 private fun String.toThemeMode(): ThemeMode =
     runCatching { ThemeMode.valueOf(this) }.getOrDefault(ThemeMode.SYSTEM)
 
@@ -574,3 +1074,6 @@ private fun String.toPageMode(): PageMode =
 
 private fun String.toTtsProvider(): TtsProvider =
     runCatching { TtsProvider.valueOf(this) }.getOrDefault(TtsProvider.SYSTEM)
+
+private fun String.toCloudSyncProvider(): CloudSyncProvider =
+    runCatching { CloudSyncProvider.valueOf(this) }.getOrDefault(CloudSyncProvider.GITHUB_GIST)

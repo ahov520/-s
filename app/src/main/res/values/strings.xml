@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">阅流</string>
+    <string name="widget_reading_stats_desc">阅流阅读快捷卡片</string>
 </resources>

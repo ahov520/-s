@@ -69,6 +69,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.readflow.app.domain.model.Book
+import com.readflow.app.domain.model.BookSubscription
+import com.readflow.app.domain.model.CloudSyncProvider
+import com.readflow.app.domain.model.SyncConflict
 import com.readflow.app.domain.usecase.BackupAndSyncUseCase
 import com.readflow.app.ui.shelf.components.BookCard
 import com.readflow.app.ui.shelf.components.EmptyState
@@ -99,11 +102,21 @@ fun ShelfScreen(
     var libraryGroupFilter by rememberSaveable { mutableStateOf("全部") }
     var discoverCategory by rememberSaveable { mutableStateOf("全部") }
     var showDiscoverFilter by rememberSaveable { mutableStateOf(false) }
+    var subscriptionDraft by rememberSaveable { mutableStateOf("") }
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
         onResult = { uri -> if (uri != null) viewModel.importBook(uri) }
     )
+
+    LaunchedEffect(pendingBookAction?.id, uiState.subscriptions) {
+        val bookId = pendingBookAction?.id
+        subscriptionDraft = if (bookId.isNullOrBlank()) {
+            ""
+        } else {
+            uiState.subscriptions.firstOrNull { it.bookId == bookId }?.sourceUrl.orEmpty()
+        }
+    }
 
     Scaffold(
         containerColor = ZenithBackground,
@@ -133,7 +146,17 @@ fun ShelfScreen(
                     onGroupSelected = { libraryGroupFilter = it },
                     onSearchModeChange = { isSearching = it },
                     onSearchQueryChange = { searchQuery = it },
-                    onImport = { launcher.launch(arrayOf("text/plain", "text/*")) },
+                    onImport = {
+                        launcher.launch(
+                            arrayOf(
+                                "text/plain",
+                                "text/*",
+                                "application/pdf",
+                                "application/epub+zip",
+                                "application/octet-stream",
+                            )
+                        )
+                    },
                     onOpenBook = { onOpenReader(it.id) },
                     onLongPressBook = { pendingBookAction = it },
                 )
@@ -159,6 +182,14 @@ fun ShelfScreen(
                     reminderHour = uiState.reminderHour,
                     reminderMinute = uiState.reminderMinute,
                     notesCount = uiState.notesCount,
+                    vocabularyCount = uiState.vocabularyCount,
+                    syncConflicts = uiState.syncConflicts,
+                    subscriptions = uiState.subscriptions,
+                    offlineCachedBookIds = uiState.offlineCachedBookIds,
+                    cloudProvider = uiState.cloudProvider,
+                    cloudWebDavEndpoint = uiState.cloudWebDavEndpoint,
+                    cloudWebDavUsername = uiState.cloudWebDavUsername,
+                    cloudRemotePath = uiState.cloudRemotePath,
                     cloudSyncToken = uiState.cloudSyncToken,
                     cloudGistId = uiState.cloudGistId,
                     lastBackupPath = uiState.lastBackupPath,
@@ -166,15 +197,32 @@ fun ShelfScreen(
                     restoreMode = uiState.restoreMode,
                     isWorking = uiState.isWorking,
                     workLabel = uiState.workLabel,
-                    onImport = { launcher.launch(arrayOf("text/plain", "text/*")) },
+                    onImport = {
+                        launcher.launch(
+                            arrayOf(
+                                "text/plain",
+                                "text/*",
+                                "application/pdf",
+                                "application/epub+zip",
+                                "application/octet-stream",
+                            )
+                        )
+                    },
                     onGoalChange = viewModel::updateDailyGoalMinutes,
                     onReminderChange = viewModel::updateReminder,
                     onRestoreModeChange = viewModel::updateRestoreMode,
+                    onCloudProviderChange = viewModel::updateCloudProvider,
+                    onCloudWebDavConfigChange = viewModel::updateCloudWebDavConfig,
                     onCloudConfigChange = viewModel::updateCloudSyncConfig,
                     onBackupLocal = viewModel::backupToLocal,
                     onRestoreLocal = viewModel::restoreFromLocalBackup,
                     onSyncUp = viewModel::syncToCloud,
                     onSyncDown = viewModel::restoreFromCloud,
+                    onResolveConflict = viewModel::resolveSyncConflict,
+                    onClearConflicts = viewModel::clearSyncConflicts,
+                    onCheckSubscriptions = viewModel::checkSubscriptions,
+                    onCacheOffline = viewModel::cacheAllBooksOffline,
+                    onClearOfflineCache = viewModel::clearOfflineCache,
                 )
             }
 
@@ -217,6 +265,24 @@ fun ShelfScreen(
                                 )
                             }
                         }
+                        OutlinedTextField(
+                            value = subscriptionDraft,
+                            onValueChange = { subscriptionDraft = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = { Text("追更源链接（可选）") },
+                        )
+                        Text(
+                            text = "保存订阅",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    pendingBookAction?.let { viewModel.updateBookSubscription(it.id, subscriptionDraft) }
+                                }
+                                .background(ZenithAccentSoft)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                        )
                     }
                 },
                 confirmButton = {
@@ -470,6 +536,14 @@ private fun ProfileTab(
     reminderHour: Int,
     reminderMinute: Int,
     notesCount: Int,
+    vocabularyCount: Int,
+    syncConflicts: List<SyncConflict>,
+    subscriptions: List<BookSubscription>,
+    offlineCachedBookIds: Set<String>,
+    cloudProvider: CloudSyncProvider,
+    cloudWebDavEndpoint: String,
+    cloudWebDavUsername: String,
+    cloudRemotePath: String,
     cloudSyncToken: String,
     cloudGistId: String,
     lastBackupPath: String,
@@ -481,11 +555,18 @@ private fun ProfileTab(
     onGoalChange: (Int) -> Unit,
     onReminderChange: (Boolean, Int, Int) -> Unit,
     onRestoreModeChange: (BackupAndSyncUseCase.RestoreMode) -> Unit,
+    onCloudProviderChange: (CloudSyncProvider) -> Unit,
+    onCloudWebDavConfigChange: (String, String, String) -> Unit,
     onCloudConfigChange: (String, String) -> Unit,
     onBackupLocal: () -> Unit,
     onRestoreLocal: (BackupAndSyncUseCase.RestoreMode) -> Unit,
     onSyncUp: () -> Unit,
     onSyncDown: (BackupAndSyncUseCase.RestoreMode) -> Unit,
+    onResolveConflict: (String, Boolean) -> Unit,
+    onClearConflicts: () -> Unit,
+    onCheckSubscriptions: () -> Unit,
+    onCacheOffline: () -> Unit,
+    onClearOfflineCache: () -> Unit,
 ) {
     val total = books.size
     val reading = books.count { it.progress in 0.001f..0.999f }
@@ -495,11 +576,17 @@ private fun ProfileTab(
     val goalProgress = (dailyReadSeconds.toFloat() / goalSeconds).coerceIn(0f, 1f)
     var tokenDraft by rememberSaveable { mutableStateOf(cloudSyncToken) }
     var gistDraft by rememberSaveable { mutableStateOf(cloudGistId) }
+    var webDavEndpointDraft by rememberSaveable { mutableStateOf(cloudWebDavEndpoint) }
+    var webDavUsernameDraft by rememberSaveable { mutableStateOf(cloudWebDavUsername) }
+    var remotePathDraft by rememberSaveable { mutableStateOf(cloudRemotePath) }
     var showToken by rememberSaveable { mutableStateOf(false) }
 
-    LaunchedEffect(cloudSyncToken, cloudGistId) {
+    LaunchedEffect(cloudSyncToken, cloudGistId, cloudWebDavEndpoint, cloudWebDavUsername, cloudRemotePath) {
         tokenDraft = cloudSyncToken
         gistDraft = cloudGistId
+        webDavEndpointDraft = cloudWebDavEndpoint
+        webDavUsernameDraft = cloudWebDavUsername
+        remotePathDraft = cloudRemotePath
     }
 
     Column(
@@ -615,6 +702,7 @@ private fun ProfileTab(
                     }
                 }
                 Text("累计笔记：$notesCount 条", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("生词收藏：$vocabularyCount 条", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 
@@ -628,6 +716,27 @@ private fun ProfileTab(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text("备份与云同步", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CloudSyncProvider.values().forEach { provider ->
+                        FilterChip(
+                            selected = cloudProvider == provider,
+                            onClick = { onCloudProviderChange(provider) },
+                            label = {
+                                Text(
+                                    when (provider) {
+                                        CloudSyncProvider.GITHUB_GIST -> "GitHub"
+                                        CloudSyncProvider.WEBDAV -> "WebDAV"
+                                        CloudSyncProvider.ONEDRIVE -> "OneDrive"
+                                        CloudSyncProvider.DROPBOX -> "Dropbox"
+                                    }
+                                )
+                            },
+                        )
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
                         selected = restoreMode == BackupAndSyncUseCase.RestoreMode.MERGE,
@@ -645,7 +754,7 @@ private fun ProfileTab(
                     onValueChange = { tokenDraft = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    placeholder = { Text("GitHub Token") },
+                    placeholder = { Text("云端访问令牌") },
                     visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
                         IconButton(onClick = { showToken = !showToken }) {
@@ -661,14 +770,42 @@ private fun ProfileTab(
                     onValueChange = { gistDraft = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    placeholder = { Text("Gist ID（首次可留空）") },
+                    placeholder = { Text("Gist ID（GitHub 模式可留空）") },
+                )
+                OutlinedTextField(
+                    value = webDavEndpointDraft,
+                    onValueChange = { webDavEndpointDraft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("WebDAV 地址（如 https://dav.example.com）") },
+                )
+                OutlinedTextField(
+                    value = webDavUsernameDraft,
+                    onValueChange = { webDavUsernameDraft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("WebDAV 用户名（可选）") },
+                )
+                OutlinedTextField(
+                    value = remotePathDraft,
+                    onValueChange = { remotePathDraft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("云端备份路径（默认 readflow-backup.json）") },
                 )
                 Text(
                     text = "保存云配置",
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable(enabled = !isWorking) { onCloudConfigChange(tokenDraft, gistDraft) }
+                        .clickable(enabled = !isWorking) {
+                            onCloudConfigChange(tokenDraft, gistDraft)
+                            onCloudWebDavConfigChange(
+                                webDavEndpointDraft,
+                                webDavUsernameDraft,
+                                remotePathDraft,
+                            )
+                        }
                         .background(if (isWorking) Color(0xFFE7EAF0) else ZenithAccentSoft)
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     color = if (isWorking) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
@@ -721,6 +858,115 @@ private fun ProfileTab(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = Color.White,
+            shadowElevation = 4.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("同步冲突中心", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                if (syncConflicts.isEmpty()) {
+                    Text("当前没有冲突记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    syncConflicts.take(5).forEach { conflict ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFFF6F7FA))
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(conflict.bookTitle, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "本地 ${(conflict.localProgress * 100).toInt()}% / 云端 ${(conflict.remoteProgress * 100).toInt()}%",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                ActionTextButton(
+                                    text = "保留本地",
+                                    onClick = { onResolveConflict(conflict.id, false) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                ActionTextButton(
+                                    text = "采用云端",
+                                    onClick = { onResolveConflict(conflict.id, true) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
+                    ActionTextButton(
+                        text = "清空冲突",
+                        onClick = onClearConflicts,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = Color.White,
+            shadowElevation = 4.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("追更订阅", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                ActionTextButton(
+                    text = "检查订阅更新",
+                    onClick = onCheckSubscriptions,
+                    enabled = !isWorking,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (subscriptions.isEmpty()) {
+                    Text("长按书架书籍可添加订阅源", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    subscriptions.take(8).forEach { item ->
+                        val title = books.firstOrNull { it.id == item.bookId }?.title ?: item.bookId
+                        Text(
+                            text = "《$title》${if (item.hasUpdate) " · 有更新" else " · 已检查"}",
+                            color = if (item.hasUpdate) ZenithAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = Color.White,
+            shadowElevation = 4.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("离线缓存", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("已缓存：${offlineCachedBookIds.size} 本", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ActionTextButton(
+                        text = "缓存全部",
+                        onClick = onCacheOffline,
+                        enabled = !isWorking,
+                        modifier = Modifier.weight(1f),
+                    )
+                    ActionTextButton(
+                        text = "清空缓存",
+                        onClick = onClearOfflineCache,
+                        enabled = !isWorking,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
     }

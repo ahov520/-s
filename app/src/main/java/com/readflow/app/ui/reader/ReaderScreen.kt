@@ -44,10 +44,12 @@ import com.readflow.app.ui.reader.components.BookmarkSheet
 import com.readflow.app.ui.reader.components.ChapterListSheet
 import com.readflow.app.ui.reader.components.ImmersiveSheet
 import com.readflow.app.ui.reader.components.PageReader
+import com.readflow.app.ui.reader.components.AiAssistantSheet
 import com.readflow.app.ui.reader.components.ReadingNotesSheet
 import com.readflow.app.ui.reader.components.ReaderToolbar
 import com.readflow.app.ui.reader.components.SearchSheet
 import com.readflow.app.ui.reader.components.ScrollReader
+import com.readflow.app.ui.reader.components.VocabularySheet
 import com.readflow.app.ui.settings.SettingsSheet
 import com.readflow.app.ui.theme.readingThemeFor
 
@@ -61,6 +63,8 @@ fun ReaderScreen(
     var showSettings by remember { mutableStateOf(false) }
     var showBookmarks by remember { mutableStateOf(false) }
     var showNotes by remember { mutableStateOf(false) }
+    var showVocabulary by remember { mutableStateOf(false) }
+    var showAiAssistant by remember { mutableStateOf(false) }
     var showChapters by remember { mutableStateOf(false) }
     var showImmersive by remember { mutableStateOf(false) }
     val activity = LocalContext.current.findActivity()
@@ -215,6 +219,8 @@ fun ReaderScreen(
             onShowChapters = { showChapters = true },
             onShowSearch = viewModel::showSearchPanel,
             onShowNotes = { showNotes = true },
+            onShowVocabulary = { showVocabulary = true },
+            onShowAi = { showAiAssistant = true },
             onShowSettings = { showSettings = true },
             onShowImmersive = { showImmersive = true },
             onProgressChange = { ratio ->
@@ -282,6 +288,15 @@ fun ReaderScreen(
         )
     }
 
+    if (showVocabulary) {
+        VocabularySheet(
+            words = state.vocabularyWords,
+            onDismiss = { showVocabulary = false },
+            onAddWord = viewModel::addVocabularyWord,
+            onDeleteWord = viewModel::deleteVocabularyWord,
+        )
+    }
+
     if (showChapters) {
         ChapterListSheet(
             chapters = state.chapters,
@@ -306,6 +321,16 @@ fun ReaderScreen(
                 viewModel.jumpToSearchResult(it)
                 viewModel.hideSearchPanel()
             },
+        )
+    }
+
+    if (showAiAssistant) {
+        AiAssistantSheet(
+            summary = state.aiSummary,
+            questions = state.aiReviewQuestions,
+            isGenerating = state.isGeneratingAi,
+            onDismiss = { showAiAssistant = false },
+            onGenerate = viewModel::generateLocalAiSummary,
         )
     }
 

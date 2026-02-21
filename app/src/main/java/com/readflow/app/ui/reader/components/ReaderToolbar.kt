@@ -7,6 +7,8 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -25,6 +28,7 @@ import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Spellcheck
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -52,6 +56,8 @@ fun ReaderToolbar(
     onShowChapters: () -> Unit,
     onShowSearch: () -> Unit,
     onShowNotes: () -> Unit,
+    onShowVocabulary: () -> Unit,
+    onShowAi: () -> Unit,
     onShowSettings: () -> Unit,
     onShowImmersive: () -> Unit,
     onProgressChange: (Float) -> Unit,
@@ -111,8 +117,10 @@ fun ReaderToolbar(
                     ProgressSlider(progress = progress, onProgressChange = onProgressChange)
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         ActionPill(
                             icon = Icons.Default.FormatListBulleted,
@@ -133,6 +141,16 @@ fun ReaderToolbar(
                             icon = Icons.Default.EditNote,
                             label = "笔记",
                             onClick = onShowNotes,
+                        )
+                        ActionPill(
+                            icon = Icons.Default.Spellcheck,
+                            label = "生词",
+                            onClick = onShowVocabulary,
+                        )
+                        ActionPill(
+                            icon = Icons.Default.AutoAwesome,
+                            label = "总结",
+                            onClick = onShowAi,
                         )
                         ActionPill(
                             icon = Icons.Default.Settings,

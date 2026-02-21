@@ -5,11 +5,15 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import com.readflow.app.data.local.datastore.SettingsKeys
 import com.readflow.app.data.local.security.SecureTokenStore
+import com.readflow.app.domain.model.BookSubscription
+import com.readflow.app.domain.model.CloudSyncProvider
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.domain.model.ReadingNote
 import com.readflow.app.domain.model.ReadingSettings
+import com.readflow.app.domain.model.SyncConflict
 import com.readflow.app.domain.model.TtsProvider
 import com.readflow.app.domain.model.ThemeMode
+import com.readflow.app.domain.model.VocabularyWord
 import com.readflow.app.domain.repository.ReaderSettingsRepository
 import com.readflow.app.domain.usecase.ReadStatsCalculator
 import com.readflow.app.domain.usecase.ReadStatsSnapshot
@@ -26,6 +30,10 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
     override fun observeSettings(): Flow<ReadingSettings> = dataStore.data.map { pref ->
         val groupsJson = pref[SettingsKeys.BOOK_GROUPS_JSON].orEmpty()
         val notesJson = pref[SettingsKeys.READING_NOTES_JSON].orEmpty()
+        val vocabularyJson = pref[SettingsKeys.VOCABULARY_JSON].orEmpty()
+        val conflictsJson = pref[SettingsKeys.SYNC_CONFLICTS_JSON].orEmpty()
+        val subscriptionsJson = pref[SettingsKeys.BOOK_SUBSCRIPTIONS_JSON].orEmpty()
+        val offlineJson = pref[SettingsKeys.OFFLINE_CACHED_BOOK_IDS_JSON].orEmpty()
         val legacyToken = pref[SettingsKeys.CLOUD_SYNC_TOKEN].orEmpty()
         ReadingSettings(
             fontSize = pref[SettingsKeys.FONT_SIZE] ?: 18,
@@ -52,6 +60,16 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
             reminderMinute = pref[SettingsKeys.REMINDER_MINUTE] ?: 0,
             bookGroups = decodeBookGroups(groupsJson),
             readingNotes = decodeNotes(notesJson),
+            vocabularyWords = decodeVocabulary(vocabularyJson),
+            syncConflicts = decodeSyncConflicts(conflictsJson),
+            bookSubscriptions = decodeSubscriptions(subscriptionsJson),
+            offlineCachedBookIds = decodeOfflineBookIds(offlineJson),
+            cloudProvider = pref[SettingsKeys.CLOUD_PROVIDER]
+                ?.let { decodeCloudProvider(it) }
+                ?: CloudSyncProvider.GITHUB_GIST,
+            cloudWebDavEndpoint = pref[SettingsKeys.CLOUD_WEBDAV_ENDPOINT].orEmpty(),
+            cloudWebDavUsername = pref[SettingsKeys.CLOUD_WEBDAV_USERNAME].orEmpty(),
+            cloudRemotePath = pref[SettingsKeys.CLOUD_REMOTE_PATH].orEmpty().ifBlank { "readflow-backup.json" },
             cloudSyncToken = secureTokenStore.readCloudSyncToken(legacyToken),
             cloudGistId = pref[SettingsKeys.CLOUD_GIST_ID] ?: "",
             lastBackupPath = pref[SettingsKeys.LAST_BACKUP_PATH] ?: "",
@@ -216,6 +234,93 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun upsertVocabularyWord(word: VocabularyWord) {
+        if (word.id.isBlank()) return
+        dataStore.edit { pref ->
+            val words = decodeVocabulary(pref[SettingsKeys.VOCABULARY_JSON].orEmpty()).toMutableList()
+            words.removeAll { it.id == word.id }
+            words.add(word)
+            pref[SettingsKeys.VOCABULARY_JSON] = encodeVocabulary(words.sortedByDescending { it.createdAt })
+        }
+    }
+
+    override suspend fun deleteVocabularyWord(wordId: String) {
+        if (wordId.isBlank()) return
+        dataStore.edit { pref ->
+            val words = decodeVocabulary(pref[SettingsKeys.VOCABULARY_JSON].orEmpty())
+                .filterNot { it.id == wordId }
+            pref[SettingsKeys.VOCABULARY_JSON] = encodeVocabulary(words)
+        }
+    }
+
+    override suspend fun replaceVocabularyWords(words: List<VocabularyWord>) {
+        dataStore.edit { pref ->
+            pref[SettingsKeys.VOCABULARY_JSON] = encodeVocabulary(words.sortedByDescending { it.createdAt })
+        }
+    }
+
+    override suspend fun replaceSyncConflicts(conflicts: List<SyncConflict>) {
+        dataStore.edit { pref ->
+            pref[SettingsKeys.SYNC_CONFLICTS_JSON] = encodeSyncConflicts(
+                conflicts.sortedByDescending { it.createdAt }
+            )
+        }
+    }
+
+    override suspend fun removeSyncConflict(conflictId: String) {
+        if (conflictId.isBlank()) return
+        dataStore.edit { pref ->
+            val conflicts = decodeSyncConflicts(pref[SettingsKeys.SYNC_CONFLICTS_JSON].orEmpty())
+                .filterNot { it.id == conflictId }
+            pref[SettingsKeys.SYNC_CONFLICTS_JSON] = encodeSyncConflicts(conflicts)
+        }
+    }
+
+    override suspend fun upsertBookSubscription(subscription: BookSubscription) {
+        if (subscription.bookId.isBlank() || subscription.sourceUrl.isBlank()) return
+        dataStore.edit { pref ->
+            val list = decodeSubscriptions(pref[SettingsKeys.BOOK_SUBSCRIPTIONS_JSON].orEmpty()).toMutableList()
+            list.removeAll { it.bookId == subscription.bookId }
+            list.add(subscription)
+            pref[SettingsKeys.BOOK_SUBSCRIPTIONS_JSON] = encodeSubscriptions(list)
+        }
+    }
+
+    override suspend fun replaceBookSubscriptions(subscriptions: List<BookSubscription>) {
+        dataStore.edit { pref ->
+            pref[SettingsKeys.BOOK_SUBSCRIPTIONS_JSON] = encodeSubscriptions(subscriptions)
+        }
+    }
+
+    override suspend fun replaceOfflineCachedBookIds(bookIds: Set<String>) {
+        dataStore.edit { pref ->
+            pref[SettingsKeys.OFFLINE_CACHED_BOOK_IDS_JSON] = encodeOfflineBookIds(bookIds)
+        }
+    }
+
+    override suspend fun markBookOfflineCached(bookId: String, cached: Boolean) {
+        if (bookId.isBlank()) return
+        dataStore.edit { pref ->
+            val ids = decodeOfflineBookIds(pref[SettingsKeys.OFFLINE_CACHED_BOOK_IDS_JSON].orEmpty()).toMutableSet()
+            if (cached) ids.add(bookId) else ids.remove(bookId)
+            pref[SettingsKeys.OFFLINE_CACHED_BOOK_IDS_JSON] = encodeOfflineBookIds(ids)
+        }
+    }
+
+    override suspend fun updateCloudProvider(provider: CloudSyncProvider) {
+        dataStore.edit { pref ->
+            pref[SettingsKeys.CLOUD_PROVIDER] = provider.name
+        }
+    }
+
+    override suspend fun updateCloudWebDavConfig(endpoint: String, username: String, remotePath: String) {
+        dataStore.edit { pref ->
+            pref[SettingsKeys.CLOUD_WEBDAV_ENDPOINT] = endpoint.trim()
+            pref[SettingsKeys.CLOUD_WEBDAV_USERNAME] = username.trim()
+            pref[SettingsKeys.CLOUD_REMOTE_PATH] = remotePath.trim().ifBlank { "readflow-backup.json" }
+        }
+    }
+
     override suspend fun updateCloudSyncConfig(token: String, gistId: String) {
         secureTokenStore.saveCloudSyncToken(token)
         dataStore.edit {
@@ -300,4 +405,153 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
         }
         return arr.toString()
     }
+
+    private fun decodeVocabulary(raw: String): List<VocabularyWord> {
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val id = item.optString("id")
+                    val word = item.optString("word")
+                    if (id.isBlank() || word.isBlank()) continue
+                    add(
+                        VocabularyWord(
+                            id = id,
+                            bookId = item.optString("bookId"),
+                            word = word,
+                            meaning = item.optString("meaning"),
+                            sentence = item.optString("sentence"),
+                            createdAt = item.optLong("createdAt", 0L),
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodeVocabulary(words: List<VocabularyWord>): String {
+        val arr = JSONArray()
+        words.forEach { word ->
+            arr.put(
+                JSONObject()
+                    .put("id", word.id)
+                    .put("bookId", word.bookId)
+                    .put("word", word.word)
+                    .put("meaning", word.meaning)
+                    .put("sentence", word.sentence)
+                    .put("createdAt", word.createdAt)
+            )
+        }
+        return arr.toString()
+    }
+
+    private fun decodeSyncConflicts(raw: String): List<SyncConflict> {
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val id = item.optString("id")
+                    val bookId = item.optString("bookId")
+                    if (id.isBlank() || bookId.isBlank()) continue
+                    add(
+                        SyncConflict(
+                            id = id,
+                            bookId = bookId,
+                            bookTitle = item.optString("bookTitle", "未知书籍"),
+                            localPosition = item.optInt("localPosition", 0),
+                            localProgress = item.optDouble("localProgress", 0.0).toFloat(),
+                            remotePosition = item.optInt("remotePosition", 0),
+                            remoteProgress = item.optDouble("remoteProgress", 0.0).toFloat(),
+                            createdAt = item.optLong("createdAt", 0L),
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodeSyncConflicts(conflicts: List<SyncConflict>): String {
+        val arr = JSONArray()
+        conflicts.forEach { conflict ->
+            arr.put(
+                JSONObject()
+                    .put("id", conflict.id)
+                    .put("bookId", conflict.bookId)
+                    .put("bookTitle", conflict.bookTitle)
+                    .put("localPosition", conflict.localPosition)
+                    .put("localProgress", conflict.localProgress.toDouble())
+                    .put("remotePosition", conflict.remotePosition)
+                    .put("remoteProgress", conflict.remoteProgress.toDouble())
+                    .put("createdAt", conflict.createdAt)
+            )
+        }
+        return arr.toString()
+    }
+
+    private fun decodeSubscriptions(raw: String): List<BookSubscription> {
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val bookId = item.optString("bookId")
+                    val sourceUrl = item.optString("sourceUrl")
+                    if (bookId.isBlank() || sourceUrl.isBlank()) continue
+                    add(
+                        BookSubscription(
+                            bookId = bookId,
+                            sourceUrl = sourceUrl,
+                            etag = item.optString("etag"),
+                            lastModified = item.optString("lastModified"),
+                            hasUpdate = item.optBoolean("hasUpdate", false),
+                            lastCheckedAt = item.optLong("lastCheckedAt", 0L),
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodeSubscriptions(subscriptions: List<BookSubscription>): String {
+        val arr = JSONArray()
+        subscriptions.forEach { item ->
+            arr.put(
+                JSONObject()
+                    .put("bookId", item.bookId)
+                    .put("sourceUrl", item.sourceUrl)
+                    .put("etag", item.etag)
+                    .put("lastModified", item.lastModified)
+                    .put("hasUpdate", item.hasUpdate)
+                    .put("lastCheckedAt", item.lastCheckedAt)
+            )
+        }
+        return arr.toString()
+    }
+
+    private fun decodeOfflineBookIds(raw: String): Set<String> {
+        if (raw.isBlank()) return emptySet()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildSet {
+                for (i in 0 until arr.length()) {
+                    val id = arr.optString(i)
+                    if (id.isNotBlank()) add(id)
+                }
+            }
+        }.getOrDefault(emptySet())
+    }
+
+    private fun encodeOfflineBookIds(bookIds: Set<String>): String {
+        val arr = JSONArray()
+        bookIds.filter { it.isNotBlank() }.sorted().forEach { arr.put(it) }
+        return arr.toString()
+    }
+
+    private fun decodeCloudProvider(raw: String): CloudSyncProvider =
+        runCatching { CloudSyncProvider.valueOf(raw) }.getOrDefault(CloudSyncProvider.GITHUB_GIST)
 }

@@ -107,6 +107,7 @@ dependencies {
     implementation(libs.google.material)
     implementation(libs.coil.compose)
     implementation(libs.androidx.security.crypto)
+    implementation(libs.pdfbox.android)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)
