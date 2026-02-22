@@ -50,6 +50,7 @@ import java.util.UUID
 
 private const val PROGRESS_SAVE_DEBOUNCE = 3000L
 private const val SEARCH_DEBOUNCE = 300L
+private const val PAGINATION_RECALCULATE_DEBOUNCE = 180L
 private const val SEARCH_LIMIT = 200
 private const val FOCUS_TICK_SECONDS = 1
 private const val TTS_PROGRESS_STEP = 35
@@ -203,6 +204,7 @@ class ReaderViewModel @Inject constructor(
     private var chaptersJob: Job? = null
     private var currentLayout: PaginationLayout? = null
     private var searchJob: Job? = null
+    private var paginationJob: Job? = null
     private var autoPageJob: Job? = null
     private var focusTimerJob: Job? = null
     private var ttsController: SystemTtsController? = null
@@ -210,6 +212,10 @@ class ReaderViewModel @Inject constructor(
     private var pendingReadStatsSeconds = 0
     private var pendingReadStatsDate = ""
     private var shouldResumeFocusOnForeground = false
+    private var notesIndexFingerprint = 0
+    private var wordsIndexFingerprint = 0
+    private var notesByBookIndex: Map<String, List<ReadingNote>> = emptyMap()
+    private var wordsByBookIndex: Map<String, List<VocabularyWord>> = emptyMap()
 
     init {
         ttsController = SystemTtsController(
@@ -244,17 +250,10 @@ class ReaderViewModel @Inject constructor(
         settingsJob?.cancel()
         settingsJob = viewModelScope.launch {
             settingsRepository.observeSettings().collect { settings ->
+                val activeBookId = currentBookId
+                val notes = notesForBook(settings.readingNotes, activeBookId)
+                val words = wordsForBook(settings.vocabularyWords, activeBookId)
                 _uiState.update { state ->
-                    val notes = settings.readingNotes
-                        .asSequence()
-                        .filter { it.bookId == currentBookId }
-                        .sortedByDescending { it.createdAt }
-                        .toList()
-                    val words = settings.vocabularyWords
-                        .asSequence()
-                        .filter { it.bookId == currentBookId }
-                        .sortedByDescending { it.createdAt }
-                        .toList()
                     state.copy(
                         settings = settings,
                         isMistouchLocked = if (settings.mistouchGuardEnabled) state.isMistouchLocked else false,
@@ -265,7 +264,7 @@ class ReaderViewModel @Inject constructor(
                 ttsController?.setRate(settings.ttsRate)
                 ttsController?.setPitch(settings.ttsPitch)
                 syncBackgroundPlayback()
-                recalculatePagination()
+                scheduleRecalculatePagination()
                 ensureAutoPageLoop()
             }
         }
@@ -327,20 +326,22 @@ class ReaderViewModel @Inject constructor(
 
             val chapters = indexChaptersUseCase(book.id, content)
             chapterIndexRepository.replaceChapters(book.id, chapters)
-            recalculatePagination()
+            scheduleRecalculatePagination(immediate = true)
         }
     }
 
     fun updateLayout(widthPx: Int, heightPx: Int, paddingHorizontalPx: Int = 48) {
         val settings = _uiState.value.settings
-        currentLayout = PaginationLayout(
+        val nextLayout = PaginationLayout(
             width = widthPx,
             height = heightPx,
             fontSize = settings.fontSize,
             lineHeight = settings.lineHeight,
             paddingHorizontal = paddingHorizontalPx,
         )
-        recalculatePagination()
+        if (currentLayout == nextLayout) return
+        currentLayout = nextLayout
+        scheduleRecalculatePagination()
     }
 
     fun onPageChanged(index: Int) {
@@ -635,7 +636,20 @@ class ReaderViewModel @Inject constructor(
         ensureAutoPageLoop()
     }
 
-    private fun recalculatePagination() {
+    private fun scheduleRecalculatePagination(immediate: Boolean = false) {
+        if (immediate) {
+            paginationJob?.cancel()
+            recalculatePaginationNow()
+            return
+        }
+        paginationJob?.cancel()
+        paginationJob = viewModelScope.launch {
+            delay(PAGINATION_RECALCULATE_DEBOUNCE)
+            recalculatePaginationNow()
+        }
+    }
+
+    private fun recalculatePaginationNow() {
         val state = _uiState.value
         if (state.content.isEmpty()) return
 
@@ -661,6 +675,50 @@ class ReaderViewModel @Inject constructor(
                 currentPage = pageIndex,
             )
         }
+    }
+
+    private fun notesForBook(allNotes: List<ReadingNote>, bookId: String?): List<ReadingNote> {
+        val safeBookId = bookId ?: return emptyList()
+        val fingerprint = notesFingerprint(allNotes)
+        if (fingerprint != notesIndexFingerprint) {
+            notesIndexFingerprint = fingerprint
+            notesByBookIndex = allNotes
+                .groupBy { it.bookId }
+                .mapValues { (_, list) -> list.sortedByDescending { it.createdAt } }
+        }
+        return notesByBookIndex[safeBookId].orEmpty()
+    }
+
+    private fun wordsForBook(allWords: List<VocabularyWord>, bookId: String?): List<VocabularyWord> {
+        val safeBookId = bookId ?: return emptyList()
+        val fingerprint = wordsFingerprint(allWords)
+        if (fingerprint != wordsIndexFingerprint) {
+            wordsIndexFingerprint = fingerprint
+            wordsByBookIndex = allWords
+                .groupBy { it.bookId }
+                .mapValues { (_, list) -> list.sortedByDescending { it.createdAt } }
+        }
+        return wordsByBookIndex[safeBookId].orEmpty()
+    }
+
+    private fun notesFingerprint(notes: List<ReadingNote>): Int {
+        var fingerprint = notes.size
+        for (note in notes) {
+            fingerprint = 31 * fingerprint + note.id.hashCode()
+            fingerprint = 31 * fingerprint + note.bookId.hashCode()
+            fingerprint = 31 * fingerprint + note.createdAt.hashCode()
+        }
+        return fingerprint
+    }
+
+    private fun wordsFingerprint(words: List<VocabularyWord>): Int {
+        var fingerprint = words.size
+        for (word in words) {
+            fingerprint = 31 * fingerprint + word.id.hashCode()
+            fingerprint = 31 * fingerprint + word.bookId.hashCode()
+            fingerprint = 31 * fingerprint + word.createdAt.hashCode()
+        }
+        return fingerprint
     }
 
     private fun updatePosition(position: Int, pageIndex: Int?) {
@@ -867,6 +925,7 @@ class ReaderViewModel @Inject constructor(
         runCatching { runBlocking { flushPendingReadStats() } }
         runCatching { syncBackgroundPlayback(TtsPlaybackState.IDLE) }
         autoPageJob?.cancel()
+        paginationJob?.cancel()
         ttsController?.shutdown()
         super.onCleared()
     }

@@ -16,7 +16,6 @@ import com.readflow.app.domain.usecase.ImportBookUseCase
 import com.readflow.app.notifications.ReadingReminderScheduler
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import javax.inject.Inject
@@ -344,13 +343,11 @@ class ShelfViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isWorking = true, workLabel = "正在缓存离线包...", error = null, message = null) }
             val books = _uiState.value.books
-            val folder = File(context.filesDir, "offline").apply { mkdirs() }
             var cachedCount = 0
             books.forEach { book ->
                 val content = runCatching { getBookContentUseCase(book.id) }.getOrDefault("")
                 if (content.isNotBlank()) {
                     runCatching {
-                        File(folder, "${book.id}.txt").writeText(content, Charsets.UTF_8)
                         settingsRepository.markBookOfflineCached(book.id, true)
                         cachedCount += 1
                     }
@@ -368,10 +365,9 @@ class ShelfViewModel @Inject constructor(
 
     fun clearOfflineCache() {
         viewModelScope.launch {
-            val folder = File(context.filesDir, "offline")
             val cachedIds = _uiState.value.offlineCachedBookIds
             cachedIds.forEach { id ->
-                runCatching { File(folder, "$id.txt").delete() }
+                runCatching { getBookContentUseCase.clearOfflineCache(id) }
                 settingsRepository.markBookOfflineCached(id, false)
             }
             _uiState.update { it.copy(message = "离线缓存已清理") }

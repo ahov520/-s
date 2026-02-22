@@ -11,11 +11,14 @@ import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.withContext
 import org.mozilla.universalchardet.UniversalDetector
 import java.io.BufferedInputStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.InputStreamReader
 import java.nio.charset.Charset
 import java.util.Locale
 import java.util.zip.ZipInputStream
@@ -51,6 +54,44 @@ class ReaderFileRepositoryImpl @Inject constructor(
         val displayName = queryDisplayName(uri) ?: uri.lastPathSegment ?: ""
         val type = resolveType(displayName)
         decodeContent(data, type, encoding)
+    }
+
+    override fun streamTextContent(uri: Uri, encoding: String, chunkSize: Int): Flow<String> = channelFlow {
+        val safeChunkSize = chunkSize.coerceIn(4 * 1024, 512 * 1024)
+        val displayName = queryDisplayName(uri) ?: uri.lastPathSegment ?: ""
+        val type = resolveType(displayName)
+        val charset = runCatching { Charset.forName(encoding) }.getOrElse { Charsets.UTF_8 }
+
+        val emitted = runCatching {
+            if (type != BookFileType.TXT) {
+                val fallback = withContext(Dispatchers.IO) { readBookContent(uri, encoding) }
+                if (fallback.isNotBlank()) send(fallback)
+                return@runCatching true
+            }
+
+            val stream = withContext(Dispatchers.IO) { context.contentResolver.openInputStream(uri) }
+                ?: return@runCatching false
+
+            withContext(Dispatchers.IO) {
+                BufferedInputStream(stream).use { input ->
+                    InputStreamReader(input, charset).use { reader ->
+                        val buffer = CharArray(safeChunkSize)
+                        while (true) {
+                            val read = reader.read(buffer)
+                            if (read <= 0) break
+                            send(String(buffer, 0, read))
+                        }
+                    }
+                }
+            }
+            true
+        }.getOrElse { false }
+
+        if (!emitted) {
+            val fallback = withContext(Dispatchers.IO) { readBookContent(uri, encoding) }
+            if (fallback.isNotBlank()) send(fallback)
+        }
+
     }
 
     private fun decodeContent(bytes: ByteArray, type: BookFileType, encoding: String): String {
