@@ -21,6 +21,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
+data class BatchImportResult(
+    val imported: List<Book>,
+    val duplicated: List<String>,
+    val failed: List<String>,
+)
+
 class ImportBookUseCase @Inject constructor(
     private val bookRepository: BookRepository,
     private val readerFileRepository: ReaderFileRepository,
@@ -32,6 +38,48 @@ class ImportBookUseCase @Inject constructor(
     }
 
     suspend operator fun invoke(uri: Uri): Result<Book> = runCatching {
+        importOne(uri, bookRepository.getAllBooks(), detectDuplicate = false)
+    }
+
+    suspend fun importBatch(uris: List<Uri>): Result<BatchImportResult> = runCatching {
+        if (uris.isEmpty()) return@runCatching BatchImportResult(
+            imported = emptyList(),
+            duplicated = emptyList(),
+            failed = emptyList(),
+        )
+
+        val existingBooks = bookRepository.getAllBooks().toMutableList()
+        val imported = mutableListOf<Book>()
+        val duplicated = mutableListOf<String>()
+        val failed = mutableListOf<String>()
+
+        uris.forEach { uri ->
+            runCatching {
+                val book = importOne(uri, existingBooks, detectDuplicate = true)
+                imported += book
+                existingBooks += book
+            }.onFailure { error ->
+                val message = error.message.orEmpty()
+                if (message.startsWith("DUPLICATED:")) {
+                    duplicated += message.removePrefix("DUPLICATED:")
+                } else {
+                    failed += (uri.lastPathSegment ?: uri.toString())
+                }
+            }
+        }
+
+        BatchImportResult(
+            imported = imported,
+            duplicated = duplicated.distinct(),
+            failed = failed.distinct(),
+        )
+    }
+
+    private suspend fun importOne(
+        uri: Uri,
+        existingBooks: List<Book>,
+        detectDuplicate: Boolean,
+    ): Book {
         runCatching {
             context.contentResolver.takePersistableUriPermission(
                 uri,
@@ -40,12 +88,26 @@ class ImportBookUseCase @Inject constructor(
         }
 
         val now = System.currentTimeMillis()
+        val fileUri = uri.toString()
+        if (detectDuplicate && existingBooks.any { it.fileUri == fileUri }) {
+            error("DUPLICATED:${uri.lastPathSegment ?: fileUri}")
+        }
+
         val meta = readerFileRepository.inspectBook(uri)
+        if (detectDuplicate) {
+            val duplicated = existingBooks.any {
+                it.title.equals(meta.title, ignoreCase = true) && it.fileSizeBytes == meta.fileSizeBytes
+            }
+            if (duplicated) {
+                error("DUPLICATED:${meta.title}")
+            }
+        }
+
         val cachedCover = getCachedCover(meta.title)
         val book = Book(
             id = UUID.randomUUID().toString(),
             title = meta.title,
-            fileUri = uri.toString(),
+            fileUri = fileUri,
             coverColor = randomCoverColor(meta.title),
             coverImageUrl = cachedCover,
             progress = 0f,
@@ -61,7 +123,7 @@ class ImportBookUseCase @Inject constructor(
         if (cachedCover.isNullOrBlank()) {
             scheduleCoverBackfill(book)
         }
-        book
+        return book
     }
 
     private fun randomCoverColor(seed: String): String {

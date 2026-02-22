@@ -80,6 +80,7 @@ import com.readflow.app.ui.theme.ZenithAccentSoft
 import com.readflow.app.ui.theme.ZenithBackground
 import coil.compose.AsyncImage
 import java.text.SimpleDateFormat
+import java.time.LocalDate
 import java.util.Date
 import java.util.Locale
 
@@ -105,8 +106,8 @@ fun ShelfScreen(
     var subscriptionDraft by rememberSaveable { mutableStateOf("") }
 
     val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-        onResult = { uri -> if (uri != null) viewModel.importBook(uri) }
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+        onResult = { uris -> if (uris.isNotEmpty()) viewModel.importBooks(uris) }
     )
 
     LaunchedEffect(pendingBookAction?.id, uiState.subscriptions) {
@@ -127,6 +128,7 @@ fun ShelfScreen(
                     activeTab = it
                     isSearching = false
                     searchQuery = ""
+                    viewModel.searchLibrary("")
                 }
             )
         }
@@ -144,8 +146,19 @@ fun ShelfScreen(
                     searchQuery = searchQuery,
                     selectedGroup = libraryGroupFilter,
                     onGroupSelected = { libraryGroupFilter = it },
-                    onSearchModeChange = { isSearching = it },
-                    onSearchQueryChange = { searchQuery = it },
+                    onSearchModeChange = {
+                        isSearching = it
+                        if (!it) {
+                            searchQuery = ""
+                            viewModel.searchLibrary("")
+                        }
+                    },
+                    onSearchQueryChange = {
+                        searchQuery = it
+                        viewModel.searchLibrary(it)
+                    },
+                    globalSearchResults = uiState.globalSearchResults,
+                    isGlobalSearching = uiState.isGlobalSearching,
                     onImport = {
                         launcher.launch(
                             arrayOf(
@@ -178,6 +191,7 @@ fun ShelfScreen(
                     dailyReadSeconds = uiState.dailyReadSeconds,
                     streakDays = uiState.streakDays,
                     dailyGoalMinutes = uiState.dailyGoalMinutes,
+                    readHistory = uiState.readHistory,
                     reminderEnabled = uiState.reminderEnabled,
                     reminderHour = uiState.reminderHour,
                     reminderMinute = uiState.reminderMinute,
@@ -322,6 +336,8 @@ private fun LibraryTab(
     bookGroups: Map<String, String>,
     isSearching: Boolean,
     searchQuery: String,
+    globalSearchResults: List<GlobalSearchResult>,
+    isGlobalSearching: Boolean,
     selectedGroup: String,
     onGroupSelected: (String) -> Unit,
     onSearchModeChange: (Boolean) -> Unit,
@@ -376,6 +392,47 @@ private fun LibraryTab(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (isGlobalSearching) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            if (searchQuery.isNotBlank() && globalSearchResults.isNotEmpty()) {
+                Text(
+                    text = "全局结果（${globalSearchResults.size}）",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    globalSearchResults.take(20).forEach { result ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.White,
+                            shadowElevation = 1.dp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    books.firstOrNull { it.id == result.bookId }?.let(onOpenBook)
+                                }
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    text = "${searchTypeLabel(result.type)} · ${result.bookTitle}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = result.snippet.ifBlank { "命中结果" },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             GridSection(books = filteredBooks, onOpenBook = onOpenBook, onLongPressBook = onLongPressBook)
             return@Column
         }
@@ -532,6 +589,7 @@ private fun ProfileTab(
     dailyReadSeconds: Int,
     streakDays: Int,
     dailyGoalMinutes: Int,
+    readHistory: Map<String, Int>,
     reminderEnabled: Boolean,
     reminderHour: Int,
     reminderMinute: Int,
@@ -574,6 +632,18 @@ private fun ProfileTab(
     val latest = books.maxByOrNull { it.updatedAt }?.title ?: "暂无"
     val goalSeconds = (dailyGoalMinutes.coerceAtLeast(1) * 60)
     val goalProgress = (dailyReadSeconds.toFloat() / goalSeconds).coerceIn(0f, 1f)
+    val completionRate = if (total == 0) 0f else finished.toFloat() / total
+    val last7Days = remember(readHistory) {
+        buildList {
+            val today = LocalDate.now()
+            for (offset in 6 downTo 0) {
+                val date = today.minusDays(offset.toLong()).toString()
+                add(readHistory[date] ?: 0)
+            }
+        }
+    }
+    val weekTotal = last7Days.sum()
+    val maxHistory = last7Days.maxOrNull()?.coerceAtLeast(1) ?: 1
     var tokenDraft by rememberSaveable { mutableStateOf(cloudSyncToken) }
     var gistDraft by rememberSaveable { mutableStateOf(cloudGistId) }
     var webDavEndpointDraft by rememberSaveable { mutableStateOf(cloudWebDavEndpoint) }
@@ -617,6 +687,24 @@ private fun ProfileTab(
                 Text("今日阅读：${formatReadingDuration(dailyReadSeconds)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("连续阅读：$streakDays 天", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("今日目标：$dailyGoalMinutes 分钟（${(goalProgress * 100).toInt()}%）", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("完读率：${(completionRate * 100).toInt()}%", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("近7日阅读：${formatReadingDuration(weekTotal)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    last7Days.forEach { value ->
+                        val ratio = value.toFloat() / maxHistory.toFloat()
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height((12 + ratio * 36).dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (value == 0) Color(0xFFE4E8F0) else ZenithAccent)
+                        )
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1299,6 +1387,13 @@ private fun filterBooksByCategory(books: List<Book>, category: String): List<Boo
     if (category == "全部") return books
     if (category == "推荐") return books.sortedByDescending { it.updatedAt }
     return books.filter { classifyCategoryByTitle(it.title) == category }
+}
+
+private fun searchTypeLabel(type: GlobalSearchType): String = when (type) {
+    GlobalSearchType.TITLE -> "书名"
+    GlobalSearchType.NOTE -> "笔记"
+    GlobalSearchType.WORD -> "生词"
+    GlobalSearchType.CONTENT -> "正文"
 }
 
 private fun classifyCategoryByTitle(title: String): String {

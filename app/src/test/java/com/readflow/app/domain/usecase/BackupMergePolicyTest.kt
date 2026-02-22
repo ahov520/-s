@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.readflow.app.domain.model.Book
 import com.readflow.app.domain.model.Bookmark
 import com.readflow.app.domain.model.ChapterIndex
+import com.readflow.app.domain.model.Highlight
 import com.readflow.app.domain.model.ReadingNote
 import org.junit.Test
 
@@ -76,6 +77,35 @@ class BackupMergePolicyTest {
         assertThat(merged["book-c"]).isEqualTo("收藏")
     }
 
+    @Test
+    fun mergeHighlights_shouldDeduplicateAndSortByCreatedAtDesc() {
+        val existing = listOf(highlight(id = "h1", createdAt = 100), highlight(id = "h2", createdAt = 200))
+        val incoming = listOf(highlight(id = "h2", createdAt = 400), highlight(id = "h3", createdAt = 300))
+
+        val merged = mergeHighlights(existing, incoming)
+
+        assertThat(merged.map { it.id }).containsExactly("h2", "h3", "h1").inOrder()
+        assertThat(merged.first().createdAt).isEqualTo(400)
+    }
+
+    @Test
+    fun mergeReadHistory_shouldKeepLatestAndTrim() {
+        val existing = mapOf(
+            "2026-02-20" to 1000,
+            "2026-02-21" to 800,
+        )
+        val incoming = mapOf(
+            "2026-02-21" to 1200,
+            "2026-02-22" to 600,
+        )
+
+        val merged = mergeReadHistory(existing, incoming, keepDays = 3)
+
+        assertThat(merged["2026-02-21"]).isEqualTo(1200)
+        assertThat(merged["2026-02-22"]).isEqualTo(600)
+        assertThat(merged["2026-02-20"]).isEqualTo(1000)
+    }
+
     private fun book(id: String, title: String): Book = Book(
         id = id,
         title = title,
@@ -116,6 +146,17 @@ class BackupMergePolicyTest {
         endChar = 30,
         quote = "quote",
         note = "note",
+        createdAt = createdAt,
+    )
+
+    private fun highlight(id: String, createdAt: Long): Highlight = Highlight(
+        id = id,
+        bookId = "book",
+        startChar = 0,
+        endChar = 120,
+        quote = "quote",
+        colorKey = "amber",
+        note = "",
         createdAt = createdAt,
     )
 }

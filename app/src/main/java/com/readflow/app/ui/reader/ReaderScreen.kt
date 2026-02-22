@@ -43,6 +43,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.ui.reader.components.BookmarkSheet
 import com.readflow.app.ui.reader.components.ChapterListSheet
+import com.readflow.app.ui.reader.components.HighlightSheet
 import com.readflow.app.ui.reader.components.ImmersiveSheet
 import com.readflow.app.ui.reader.components.PageReader
 import com.readflow.app.ui.reader.components.AiAssistantSheet
@@ -69,6 +70,7 @@ fun ReaderScreen(
     var showSettings by remember { mutableStateOf(false) }
     var showBookmarks by remember { mutableStateOf(false) }
     var showNotes by remember { mutableStateOf(false) }
+    var showHighlights by remember { mutableStateOf(false) }
     var showVocabulary by remember { mutableStateOf(false) }
     var showAiAssistant by remember { mutableStateOf(false) }
     var showChapters by remember { mutableStateOf(false) }
@@ -229,6 +231,7 @@ fun ReaderScreen(
             onShowBookmarks = { showBookmarks = true },
             onShowChapters = { showChapters = true },
             onShowSearch = viewModel::showSearchPanel,
+            onShowHighlights = { showHighlights = true },
             onShowNotes = { showNotes = true },
             onShowVocabulary = { showVocabulary = true },
             onShowAi = { showAiAssistant = true },
@@ -299,6 +302,19 @@ fun ReaderScreen(
         )
     }
 
+    if (showHighlights) {
+        HighlightSheet(
+            highlights = content.highlights,
+            onDismiss = { showHighlights = false },
+            onAddHighlight = viewModel::addHighlight,
+            onDeleteHighlight = viewModel::deleteHighlight,
+            onJumpToHighlight = {
+                viewModel.jumpToHighlight(it)
+                showHighlights = false
+            },
+        )
+    }
+
     if (showVocabulary) {
         VocabularySheet(
             words = content.vocabularyWords,
@@ -338,6 +354,8 @@ fun ReaderScreen(
     if (showAiAssistant) {
         AiAssistantSheet(
             summary = content.aiSummary,
+            sourceLabel = content.aiSourceLabel,
+            keywords = content.aiKeywords,
             questions = content.aiReviewQuestions,
             isGenerating = uiControl.isGeneratingAi,
             onDismiss = { showAiAssistant = false },

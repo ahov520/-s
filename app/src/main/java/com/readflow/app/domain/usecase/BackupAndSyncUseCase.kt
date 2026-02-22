@@ -8,6 +8,7 @@ import com.readflow.app.domain.model.BookSubscription
 import com.readflow.app.domain.model.Bookmark
 import com.readflow.app.domain.model.ChapterIndex
 import com.readflow.app.domain.model.CloudSyncProvider
+import com.readflow.app.domain.model.Highlight
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.domain.model.ReadingNote
 import com.readflow.app.domain.model.SyncConflict
@@ -162,12 +163,14 @@ class BackupAndSyncUseCase @Inject constructor(
                 .put("dailyReadSeconds", settings.dailyReadSeconds)
                 .put("lastReadDate", settings.lastReadDate)
                 .put("streakDays", settings.streakDays)
+                .put("readHistory", JSONObject(settings.readHistory))
                 .put("dailyGoalMinutes", settings.dailyGoalMinutes)
                 .put("reminderEnabled", settings.reminderEnabled)
                 .put("reminderHour", settings.reminderHour)
                 .put("reminderMinute", settings.reminderMinute)
                 .put("bookGroups", JSONObject(settings.bookGroups))
                 .put("readingNotes", settings.readingNotes.toNotesJsonArray())
+                .put("highlights", settings.highlights.toHighlightsJsonArray())
                 .put("vocabularyWords", settings.vocabularyWords.toVocabularyJsonArray())
                 .put("syncConflicts", settings.syncConflicts.toSyncConflictsJsonArray())
                 .put("bookSubscriptions", settings.bookSubscriptions.toSubscriptionsJsonArray())
@@ -255,7 +258,9 @@ class BackupAndSyncUseCase @Inject constructor(
             )
             settingsRepository.replaceBookGroups(settings.optJSONObject("bookGroups").toBookGroups())
             settingsRepository.replaceReadingNotes(settings.optJSONArray("readingNotes").toReadingNotes())
+            settingsRepository.replaceHighlights(settings.optJSONArray("highlights").toHighlights())
             settingsRepository.replaceVocabularyWords(settings.optJSONArray("vocabularyWords").toVocabularyWords())
+            settingsRepository.replaceReadHistory(settings.optJSONObject("readHistory").toReadHistory())
             settingsRepository.replaceBookSubscriptions(settings.optJSONArray("bookSubscriptions").toSubscriptions())
             settingsRepository.replaceOfflineCachedBookIds(settings.optJSONArray("offlineCachedBookIds").toOfflineBookIds())
             settingsRepository.replaceSyncConflicts(settings.optJSONArray("syncConflicts").toSyncConflicts())
@@ -269,7 +274,9 @@ class BackupAndSyncUseCase @Inject constructor(
             val current = settingsRepository.observeSettings().first()
             val mergedGroups = mergeBookGroups(current.bookGroups, settings.optJSONObject("bookGroups").toBookGroups())
             val mergedNotes = mergeReadingNotes(current.readingNotes, settings.optJSONArray("readingNotes").toReadingNotes())
+            val mergedHighlights = mergeHighlights(current.highlights, settings.optJSONArray("highlights").toHighlights())
             val mergedWords = mergeVocabularyWords(current.vocabularyWords, settings.optJSONArray("vocabularyWords").toVocabularyWords())
+            val mergedReadHistory = mergeReadHistory(current.readHistory, settings.optJSONObject("readHistory").toReadHistory())
             val mergedSubscriptions = mergeSubscriptions(
                 current.bookSubscriptions,
                 settings.optJSONArray("bookSubscriptions").toSubscriptions(),
@@ -277,7 +284,9 @@ class BackupAndSyncUseCase @Inject constructor(
             val mergedOfflineIds = current.offlineCachedBookIds + settings.optJSONArray("offlineCachedBookIds").toOfflineBookIds()
             settingsRepository.replaceBookGroups(mergedGroups)
             settingsRepository.replaceReadingNotes(mergedNotes)
+            settingsRepository.replaceHighlights(mergedHighlights)
             settingsRepository.replaceVocabularyWords(mergedWords)
+            settingsRepository.replaceReadHistory(mergedReadHistory)
             settingsRepository.replaceBookSubscriptions(mergedSubscriptions)
             settingsRepository.replaceOfflineCachedBookIds(mergedOfflineIds)
         }
@@ -733,6 +742,22 @@ private fun List<ReadingNote>.toNotesJsonArray(): JSONArray = JSONArray().apply 
     }
 }
 
+private fun List<Highlight>.toHighlightsJsonArray(): JSONArray = JSONArray().apply {
+    forEach { highlight ->
+        put(
+            JSONObject()
+                .put("id", highlight.id)
+                .put("bookId", highlight.bookId)
+                .put("startChar", highlight.startChar)
+                .put("endChar", highlight.endChar)
+                .put("quote", highlight.quote)
+                .put("colorKey", highlight.colorKey)
+                .put("note", highlight.note)
+                .put("createdAt", highlight.createdAt)
+        )
+    }
+}
+
 private fun List<VocabularyWord>.toVocabularyJsonArray(): JSONArray = JSONArray().apply {
     forEach { word ->
         put(
@@ -872,6 +897,30 @@ private fun JSONArray?.toReadingNotes(): List<ReadingNote> {
     }
 }
 
+private fun JSONArray?.toHighlights(): List<Highlight> {
+    if (this == null) return emptyList()
+    return buildList {
+        for (i in 0 until length()) {
+            val o = optJSONObject(i) ?: continue
+            val id = o.optString("id")
+            val bookId = o.optString("bookId")
+            if (id.isBlank() || bookId.isBlank()) continue
+            add(
+                Highlight(
+                    id = id,
+                    bookId = bookId,
+                    startChar = o.optInt("startChar", 0),
+                    endChar = o.optInt("endChar", 0),
+                    quote = o.optString("quote"),
+                    colorKey = o.optString("colorKey", "amber"),
+                    note = o.optString("note"),
+                    createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+                )
+            )
+        }
+    }
+}
+
 private fun JSONArray?.toVocabularyWords(): List<VocabularyWord> {
     if (this == null) return emptyList()
     return buildList {
@@ -961,6 +1010,18 @@ private fun JSONObject?.toBookGroups(): Map<String, String> {
     return out
 }
 
+private fun JSONObject?.toReadHistory(): Map<String, Int> {
+    if (this == null) return emptyMap()
+    val out = linkedMapOf<String, Int>()
+    val keys = keys()
+    while (keys.hasNext()) {
+        val key = keys.next()
+        val value = optInt(key, 0).coerceAtLeast(0)
+        if (key.isNotBlank()) out[key] = value
+    }
+    return out
+}
+
 internal fun mergeBooksById(existing: List<Book>, incoming: List<Book>): List<Book> {
     val merged = linkedMapOf<String, Book>()
     existing.forEach { merged[it.id] = it }
@@ -1035,6 +1096,13 @@ internal fun mergeReadingNotes(existing: List<ReadingNote>, incoming: List<Readi
     return merged.values.sortedByDescending { it.createdAt }
 }
 
+internal fun mergeHighlights(existing: List<Highlight>, incoming: List<Highlight>): List<Highlight> {
+    val merged = linkedMapOf<String, Highlight>()
+    existing.forEach { merged[it.id] = it }
+    incoming.forEach { merged[it.id] = it }
+    return merged.values.sortedByDescending { it.createdAt }
+}
+
 internal fun mergeBookGroups(existing: Map<String, String>, incoming: Map<String, String>): Map<String, String> {
     if (incoming.isEmpty()) return existing
     val merged = existing.toMutableMap()
@@ -1054,6 +1122,24 @@ internal fun mergeVocabularyWords(
     existing.forEach { merged[it.id] = it }
     incoming.forEach { merged[it.id] = it }
     return merged.values.sortedByDescending { it.createdAt }
+}
+
+internal fun mergeReadHistory(
+    existing: Map<String, Int>,
+    incoming: Map<String, Int>,
+    keepDays: Int = 60,
+): Map<String, Int> {
+    if (incoming.isEmpty()) return existing
+    val merged = existing.toMutableMap()
+    incoming.forEach { (date, seconds) ->
+        if (date.isNotBlank()) {
+            merged[date] = maxOf(merged[date] ?: 0, seconds.coerceAtLeast(0))
+        }
+    }
+    return merged.entries
+        .sortedByDescending { it.key }
+        .take(keepDays)
+        .associate { it.toPair() }
 }
 
 internal fun mergeSubscriptions(

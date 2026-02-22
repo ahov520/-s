@@ -7,12 +7,14 @@ import androidx.lifecycle.viewModelScope
 import com.readflow.app.domain.model.Book
 import com.readflow.app.domain.model.BookSubscription
 import com.readflow.app.domain.model.CloudSyncProvider
+import com.readflow.app.domain.model.ReadingSettings
 import com.readflow.app.domain.model.SyncConflict
 import com.readflow.app.domain.repository.BookRepository
 import com.readflow.app.domain.repository.ReaderSettingsRepository
 import com.readflow.app.domain.usecase.BackupAndSyncUseCase
 import com.readflow.app.domain.usecase.GetBookContentUseCase
 import com.readflow.app.domain.usecase.ImportBookUseCase
+import com.readflow.app.domain.usecase.SearchInTextUseCase
 import com.readflow.app.notifications.ReadingReminderScheduler
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -32,6 +34,7 @@ data class ShelfUiState(
     val dailyReadSeconds: Int = 0,
     val streakDays: Int = 0,
     val dailyGoalMinutes: Int = 60,
+    val readHistory: Map<String, Int> = emptyMap(),
     val reminderEnabled: Boolean = false,
     val reminderHour: Int = 21,
     val reminderMinute: Int = 0,
@@ -50,11 +53,29 @@ data class ShelfUiState(
     val lastBackupPath: String = "",
     val lastSyncAt: Long = 0L,
     val restoreMode: BackupAndSyncUseCase.RestoreMode = BackupAndSyncUseCase.RestoreMode.MERGE,
+    val isGlobalSearching: Boolean = false,
+    val globalSearchResults: List<GlobalSearchResult> = emptyList(),
     val isImporting: Boolean = false,
     val isWorking: Boolean = false,
     val workLabel: String? = null,
     val error: String? = null,
     val message: String? = null,
+)
+
+enum class GlobalSearchType {
+    TITLE,
+    NOTE,
+    WORD,
+    CONTENT,
+}
+
+data class GlobalSearchResult(
+    val id: String,
+    val type: GlobalSearchType,
+    val bookId: String,
+    val bookTitle: String,
+    val snippet: String,
+    val position: Int?,
 )
 
 @HiltViewModel
@@ -65,11 +86,13 @@ class ShelfViewModel @Inject constructor(
     private val importBookUseCase: ImportBookUseCase,
     private val backupAndSyncUseCase: BackupAndSyncUseCase,
     private val getBookContentUseCase: GetBookContentUseCase,
+    private val searchInTextUseCase: SearchInTextUseCase,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ShelfUiState())
     val uiState: StateFlow<ShelfUiState> = _uiState.asStateFlow()
 
     private var reminderSignature: String = ""
+    private var latestSettingsSnapshot: ReadingSettings = ReadingSettings()
 
     init {
         viewModelScope.launch {
@@ -79,11 +102,13 @@ class ShelfViewModel @Inject constructor(
         }
         viewModelScope.launch {
             settingsRepository.observeSettings().collect { settings ->
+                latestSettingsSnapshot = settings
                 _uiState.update {
                     it.copy(
                         dailyReadSeconds = settings.dailyReadSeconds,
                         streakDays = settings.streakDays,
                         dailyGoalMinutes = settings.dailyGoalMinutes,
+                        readHistory = settings.readHistory,
                         reminderEnabled = settings.reminderEnabled,
                         reminderHour = settings.reminderHour,
                         reminderMinute = settings.reminderMinute,
@@ -126,6 +151,30 @@ class ShelfViewModel @Inject constructor(
                 }
                 .onSuccess {
                     _uiState.update { it.copy(isImporting = false, message = "导入完成") }
+                }
+        }
+    }
+
+    fun importBooks(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isImporting = true, error = null, message = null) }
+            importBookUseCase.importBatch(uris)
+                .onFailure { throwable ->
+                    _uiState.update {
+                        it.copy(
+                            isImporting = false,
+                            error = throwable.message ?: "批量导入失败",
+                        )
+                    }
+                }
+                .onSuccess { result ->
+                    val message = buildString {
+                        append("批量导入完成：成功 ${result.imported.size} 本")
+                        if (result.duplicated.isNotEmpty()) append("，重复 ${result.duplicated.size} 本")
+                        if (result.failed.isNotEmpty()) append("，失败 ${result.failed.size} 本")
+                    }
+                    _uiState.update { it.copy(isImporting = false, message = message) }
                 }
         }
     }
@@ -371,6 +420,96 @@ class ShelfViewModel @Inject constructor(
                 settingsRepository.markBookOfflineCached(id, false)
             }
             _uiState.update { it.copy(message = "离线缓存已清理") }
+        }
+    }
+
+    fun searchLibrary(query: String) {
+        val normalized = query.trim()
+        if (normalized.isBlank()) {
+            _uiState.update { it.copy(isGlobalSearching = false, globalSearchResults = emptyList()) }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isGlobalSearching = true) }
+            val books = _uiState.value.books
+            val settings = latestSettingsSnapshot
+            val out = mutableListOf<GlobalSearchResult>()
+
+            books.filter { it.title.contains(normalized, ignoreCase = true) }
+                .take(20)
+                .forEach { book ->
+                    out += GlobalSearchResult(
+                        id = "title-${book.id}",
+                        type = GlobalSearchType.TITLE,
+                        bookId = book.id,
+                        bookTitle = book.title,
+                        snippet = "命中书名",
+                        position = null,
+                    )
+                }
+
+            settings.readingNotes
+                .asSequence()
+                .filter { it.note.contains(normalized, true) || it.quote.contains(normalized, true) }
+                .take(20)
+                .forEach { note ->
+                    val title = books.firstOrNull { it.id == note.bookId }?.title ?: "未知书籍"
+                    out += GlobalSearchResult(
+                        id = "note-${note.id}",
+                        type = GlobalSearchType.NOTE,
+                        bookId = note.bookId,
+                        bookTitle = title,
+                        snippet = note.note.ifBlank { note.quote }.take(120),
+                        position = note.startChar,
+                    )
+                }
+
+            settings.vocabularyWords
+                .asSequence()
+                .filter { it.word.contains(normalized, true) || it.meaning.contains(normalized, true) }
+                .take(20)
+                .forEach { word ->
+                    val title = books.firstOrNull { it.id == word.bookId }?.title ?: "未知书籍"
+                    out += GlobalSearchResult(
+                        id = "word-${word.id}",
+                        type = GlobalSearchType.WORD,
+                        bookId = word.bookId,
+                        bookTitle = title,
+                        snippet = "${word.word} ${word.meaning}".trim(),
+                        position = null,
+                    )
+                }
+
+            val textCandidates = books.take(8)
+            textCandidates.forEach { book ->
+                val content = runCatching { getBookContentUseCase.readWindow(book.id, 0, 60_000) }.getOrDefault("")
+                if (content.isBlank()) return@forEach
+                val match = searchInTextUseCase(
+                    content = content,
+                    query = normalized,
+                    limit = 1,
+                    contextWindow = 28,
+                ).matches.firstOrNull() ?: return@forEach
+                out += GlobalSearchResult(
+                    id = "content-${book.id}",
+                    type = GlobalSearchType.CONTENT,
+                    bookId = book.id,
+                    bookTitle = book.title,
+                    snippet = match.snippet,
+                    position = match.position,
+                )
+            }
+
+            val deduped = out
+                .distinctBy { it.id }
+                .take(80)
+            _uiState.update {
+                it.copy(
+                    isGlobalSearching = false,
+                    globalSearchResults = deduped,
+                )
+            }
         }
     }
 

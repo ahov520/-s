@@ -2,6 +2,7 @@ package com.readflow.app.domain.repository
 
 import com.readflow.app.domain.model.BookSubscription
 import com.readflow.app.domain.model.CloudSyncProvider
+import com.readflow.app.domain.model.Highlight
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.domain.model.ReadingNote
 import com.readflow.app.domain.model.ReadingSettings
@@ -38,6 +39,9 @@ interface ReaderSettingsRepository {
     suspend fun upsertReadingNote(note: ReadingNote)
     suspend fun replaceReadingNotes(notes: List<ReadingNote>)
     suspend fun deleteReadingNote(noteId: String)
+    suspend fun upsertHighlight(highlight: Highlight)
+    suspend fun replaceHighlights(highlights: List<Highlight>)
+    suspend fun deleteHighlight(highlightId: String)
     suspend fun upsertVocabularyWord(word: VocabularyWord)
     suspend fun deleteVocabularyWord(wordId: String)
     suspend fun replaceVocabularyWords(words: List<VocabularyWord>)
@@ -50,6 +54,7 @@ interface ReaderSettingsRepository {
     suspend fun updateCloudProvider(provider: CloudSyncProvider)
     suspend fun updateCloudWebDavConfig(endpoint: String, username: String, remotePath: String)
     suspend fun updateCloudSyncConfig(token: String, gistId: String)
+    suspend fun replaceReadHistory(history: Map<String, Int>)
     suspend fun updateLastBackupPath(path: String)
     suspend fun updateLastSyncAt(epochMillis: Long)
 }

@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.readflow.app.domain.model.Book
 import com.readflow.app.domain.model.Bookmark
 import com.readflow.app.domain.model.ChapterIndex
+import com.readflow.app.domain.model.Highlight
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.domain.model.ReadingNote
 import com.readflow.app.domain.model.ReadingSettings
@@ -72,8 +73,11 @@ data class ReaderContentState(
     val chapters: List<ChapterIndex> = emptyList(),
     val bookmarks: List<Bookmark> = emptyList(),
     val readingNotes: List<ReadingNote> = emptyList(),
+    val highlights: List<Highlight> = emptyList(),
     val vocabularyWords: List<VocabularyWord> = emptyList(),
     val aiSummary: String = "",
+    val aiKeywords: List<String> = emptyList(),
+    val aiSourceLabel: String = "",
     val aiReviewQuestions: List<String> = emptyList(),
 )
 
@@ -123,12 +127,15 @@ data class ReaderUiState(
     val searchResults: List<SearchResultUi> = emptyList(),
     val searchTruncated: Boolean = false,
     val readingNotes: List<ReadingNote> = emptyList(),
+    val highlights: List<Highlight> = emptyList(),
     val vocabularyWords: List<VocabularyWord> = emptyList(),
     val ttsState: TtsPlaybackState = TtsPlaybackState.IDLE,
     val focusSessionSeconds: Int = 0,
     val isFocusTimerRunning: Boolean = false,
     val isMistouchLocked: Boolean = false,
     val aiSummary: String = "",
+    val aiKeywords: List<String> = emptyList(),
+    val aiSourceLabel: String = "",
     val aiReviewQuestions: List<String> = emptyList(),
     val isGeneratingAi: Boolean = false,
 )
@@ -157,8 +164,11 @@ class ReaderViewModel @Inject constructor(
             chapters = it.chapters,
             bookmarks = it.bookmarks,
             readingNotes = it.readingNotes,
+            highlights = it.highlights,
             vocabularyWords = it.vocabularyWords,
             aiSummary = it.aiSummary,
+            aiKeywords = it.aiKeywords,
+            aiSourceLabel = it.aiSourceLabel,
             aiReviewQuestions = it.aiReviewQuestions,
         )
     }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ReaderContentState())
@@ -214,8 +224,10 @@ class ReaderViewModel @Inject constructor(
     private var shouldResumeFocusOnForeground = false
     private var notesIndexFingerprint = 0
     private var wordsIndexFingerprint = 0
+    private var highlightsIndexFingerprint = 0
     private var notesByBookIndex: Map<String, List<ReadingNote>> = emptyMap()
     private var wordsByBookIndex: Map<String, List<VocabularyWord>> = emptyMap()
+    private var highlightsByBookIndex: Map<String, List<Highlight>> = emptyMap()
 
     init {
         ttsController = SystemTtsController(
@@ -252,12 +264,14 @@ class ReaderViewModel @Inject constructor(
             settingsRepository.observeSettings().collect { settings ->
                 val activeBookId = currentBookId
                 val notes = notesForBook(settings.readingNotes, activeBookId)
+                val highlights = highlightsForBook(settings.highlights, activeBookId)
                 val words = wordsForBook(settings.vocabularyWords, activeBookId)
                 _uiState.update { state ->
                     state.copy(
                         settings = settings,
                         isMistouchLocked = if (settings.mistouchGuardEnabled) state.isMistouchLocked else false,
                         readingNotes = notes,
+                        highlights = highlights,
                         vocabularyWords = words,
                     )
                 }
@@ -319,6 +333,8 @@ class ReaderViewModel @Inject constructor(
                     isFocusTimerRunning = false,
                     isMistouchLocked = _uiState.value.settings.mistouchGuardEnabled,
                     aiSummary = "",
+                    aiKeywords = emptyList(),
+                    aiSourceLabel = "",
                     aiReviewQuestions = emptyList(),
                     isGeneratingAi = false,
                 )
@@ -576,6 +592,36 @@ class ReaderViewModel @Inject constructor(
         jumpToPosition(note.startChar)
     }
 
+    fun addHighlight(colorKey: String, noteText: String = "") {
+        val state = _uiState.value
+        val bookId = currentBookId ?: return
+        if (state.content.isBlank()) return
+        val safeColor = colorKey.ifBlank { "amber" }
+        val start = state.currentPosition.coerceAtLeast(0)
+        val end = (start + 120).coerceAtMost(state.content.length)
+        if (end <= start) return
+        val quote = state.content.substring(start, end).trim().ifBlank { "当前位置片段" }
+        val item = Highlight(
+            id = UUID.randomUUID().toString(),
+            bookId = bookId,
+            startChar = start,
+            endChar = end,
+            quote = quote,
+            colorKey = safeColor,
+            note = noteText.trim(),
+            createdAt = System.currentTimeMillis(),
+        )
+        viewModelScope.launch { settingsRepository.upsertHighlight(item) }
+    }
+
+    fun deleteHighlight(highlightId: String) {
+        viewModelScope.launch { settingsRepository.deleteHighlight(highlightId) }
+    }
+
+    fun jumpToHighlight(highlight: Highlight) {
+        jumpToPosition(highlight.startChar)
+    }
+
     fun addVocabularyWord(wordText: String, meaningText: String) {
         val bookId = currentBookId ?: return
         val word = wordText.trim()
@@ -603,14 +649,17 @@ class ReaderViewModel @Inject constructor(
         _uiState.update { it.copy(isGeneratingAi = true) }
         viewModelScope.launch {
             val summary = withContext(Dispatchers.Default) {
-                val snippet = buildSnippetAroundCurrent()
-                summarizeSnippet(snippet)
+                val (sourceLabel, snippet) = buildAiSourceText()
+                val result = summarizeSnippet(snippet)
+                Triple(sourceLabel, result.first, result.second)
             }
             _uiState.update {
                 it.copy(
                     isGeneratingAi = false,
-                    aiSummary = summary.first,
-                    aiReviewQuestions = summary.second,
+                    aiSourceLabel = summary.first,
+                    aiSummary = summary.second.first,
+                    aiReviewQuestions = summary.second.second,
+                    aiKeywords = summary.third,
                 )
             }
         }
@@ -701,6 +750,18 @@ class ReaderViewModel @Inject constructor(
         return wordsByBookIndex[safeBookId].orEmpty()
     }
 
+    private fun highlightsForBook(allHighlights: List<Highlight>, bookId: String?): List<Highlight> {
+        val safeBookId = bookId ?: return emptyList()
+        val fingerprint = highlightsFingerprint(allHighlights)
+        if (fingerprint != highlightsIndexFingerprint) {
+            highlightsIndexFingerprint = fingerprint
+            highlightsByBookIndex = allHighlights
+                .groupBy { it.bookId }
+                .mapValues { (_, list) -> list.sortedByDescending { it.createdAt } }
+        }
+        return highlightsByBookIndex[safeBookId].orEmpty()
+    }
+
     private fun notesFingerprint(notes: List<ReadingNote>): Int {
         var fingerprint = notes.size
         for (note in notes) {
@@ -717,6 +778,16 @@ class ReaderViewModel @Inject constructor(
             fingerprint = 31 * fingerprint + word.id.hashCode()
             fingerprint = 31 * fingerprint + word.bookId.hashCode()
             fingerprint = 31 * fingerprint + word.createdAt.hashCode()
+        }
+        return fingerprint
+    }
+
+    private fun highlightsFingerprint(highlights: List<Highlight>): Int {
+        var fingerprint = highlights.size
+        for (highlight in highlights) {
+            fingerprint = 31 * fingerprint + highlight.id.hashCode()
+            fingerprint = 31 * fingerprint + highlight.bookId.hashCode()
+            fingerprint = 31 * fingerprint + highlight.createdAt.hashCode()
         }
         return fingerprint
     }
@@ -888,8 +959,25 @@ class ReaderViewModel @Inject constructor(
         return state.content.substring(start, end).trim()
     }
 
-    private fun summarizeSnippet(snippet: String): Pair<String, List<String>> {
-        if (snippet.isBlank()) return "当前片段暂无可总结内容。" to emptyList()
+    private fun buildAiSourceText(): Pair<String, String> {
+        val state = _uiState.value
+        val chapter = state.chapters.firstOrNull { state.currentPosition in it.startChar until it.endChar }
+        if (chapter != null && state.content.isNotBlank()) {
+            val start = chapter.startChar.coerceAtLeast(0).coerceAtMost(state.content.length)
+            val end = chapter.endChar.coerceAtLeast(start).coerceAtMost(state.content.length)
+            if (end > start) {
+                val section = state.content.substring(start, end).trim()
+                if (section.isNotBlank()) {
+                    val trimmed = if (section.length > 6000) section.take(6000) else section
+                    return (chapter.title.ifBlank { "当前章节" }) to trimmed
+                }
+            }
+        }
+        return "当前片段" to buildSnippetAroundCurrent()
+    }
+
+    private fun summarizeSnippet(snippet: String): Pair<Pair<String, List<String>>, List<String>> {
+        if (snippet.isBlank()) return ("当前片段暂无可总结内容。" to emptyList()) to emptyList()
         val normalized = snippet
             .replace("\r", "")
             .replace(Regex("\\s+"), " ")
@@ -915,7 +1003,24 @@ class ReaderViewModel @Inject constructor(
             "主角在本段做出的决定会带来什么后果？",
             "你会如何用两句话复述本段核心内容？",
         )
-        return summary to review
+        return (summary to review) to extractKeywords(normalized)
+    }
+
+    private fun extractKeywords(text: String, limit: Int = 8): List<String> {
+        val stopWords = setOf("的", "了", "和", "是", "在", "与", "及", "或", "to", "the", "and", "of", "a", "an")
+        val tokens = Regex("[\\p{IsHan}]{2,}|[A-Za-z]{3,}")
+            .findAll(text.lowercase())
+            .map { it.value }
+            .filter { it !in stopWords }
+            .toList()
+        if (tokens.isEmpty()) return emptyList()
+        return tokens
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+            .take(limit)
+            .map { it.key }
     }
 
     override fun onCleared() {

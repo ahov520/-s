@@ -7,6 +7,7 @@ import com.readflow.app.data.local.datastore.SettingsKeys
 import com.readflow.app.data.local.security.SecureTokenStore
 import com.readflow.app.domain.model.BookSubscription
 import com.readflow.app.domain.model.CloudSyncProvider
+import com.readflow.app.domain.model.Highlight
 import com.readflow.app.domain.model.PageMode
 import com.readflow.app.domain.model.ReadingNote
 import com.readflow.app.domain.model.ReadingSettings
@@ -30,7 +31,9 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
     override fun observeSettings(): Flow<ReadingSettings> = dataStore.data.map { pref ->
         val groupsJson = pref[SettingsKeys.BOOK_GROUPS_JSON].orEmpty()
         val notesJson = pref[SettingsKeys.READING_NOTES_JSON].orEmpty()
+        val highlightsJson = pref[SettingsKeys.HIGHLIGHTS_JSON].orEmpty()
         val vocabularyJson = pref[SettingsKeys.VOCABULARY_JSON].orEmpty()
+        val readHistoryJson = pref[SettingsKeys.READ_HISTORY_JSON].orEmpty()
         val conflictsJson = pref[SettingsKeys.SYNC_CONFLICTS_JSON].orEmpty()
         val subscriptionsJson = pref[SettingsKeys.BOOK_SUBSCRIPTIONS_JSON].orEmpty()
         val offlineJson = pref[SettingsKeys.OFFLINE_CACHED_BOOK_IDS_JSON].orEmpty()
@@ -60,7 +63,9 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
             reminderMinute = pref[SettingsKeys.REMINDER_MINUTE] ?: 0,
             bookGroups = decodeBookGroups(groupsJson),
             readingNotes = decodeNotes(notesJson),
+            highlights = decodeHighlights(highlightsJson),
             vocabularyWords = decodeVocabulary(vocabularyJson),
+            readHistory = decodeReadHistory(readHistoryJson),
             syncConflicts = decodeSyncConflicts(conflictsJson),
             bookSubscriptions = decodeSubscriptions(subscriptionsJson),
             offlineCachedBookIds = decodeOfflineBookIds(offlineJson),
@@ -152,6 +157,12 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
             pref[SettingsKeys.DAILY_READ_SECONDS] = updated.dailyReadSeconds
             pref[SettingsKeys.LAST_READ_DATE] = updated.lastReadDate
             pref[SettingsKeys.STREAK_DAYS] = updated.streakDays
+
+            if (today.isNotBlank() && secondsDelta > 0) {
+                val history = decodeReadHistory(pref[SettingsKeys.READ_HISTORY_JSON].orEmpty()).toMutableMap()
+                history[today] = (history[today] ?: 0) + secondsDelta
+                pref[SettingsKeys.READ_HISTORY_JSON] = encodeReadHistory(trimReadHistory(history))
+            }
         }
     }
 
@@ -174,6 +185,11 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
             pref[SettingsKeys.DAILY_READ_SECONDS] = dailyReadSeconds.coerceAtLeast(0)
             pref[SettingsKeys.LAST_READ_DATE] = lastReadDate
             pref[SettingsKeys.STREAK_DAYS] = streakDays.coerceAtLeast(0)
+            if (lastReadDate.isNotBlank() && dailyReadSeconds > 0) {
+                val history = decodeReadHistory(pref[SettingsKeys.READ_HISTORY_JSON].orEmpty()).toMutableMap()
+                history[lastReadDate] = dailyReadSeconds
+                pref[SettingsKeys.READ_HISTORY_JSON] = encodeReadHistory(trimReadHistory(history))
+            }
         }
     }
 
@@ -231,6 +247,31 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
             val notes = decodeNotes(pref[SettingsKeys.READING_NOTES_JSON].orEmpty())
                 .filterNot { it.id == noteId }
             pref[SettingsKeys.READING_NOTES_JSON] = encodeNotes(notes)
+        }
+    }
+
+    override suspend fun upsertHighlight(highlight: Highlight) {
+        if (highlight.id.isBlank() || highlight.bookId.isBlank()) return
+        dataStore.edit { pref ->
+            val highlights = decodeHighlights(pref[SettingsKeys.HIGHLIGHTS_JSON].orEmpty()).toMutableList()
+            highlights.removeAll { it.id == highlight.id }
+            highlights.add(highlight)
+            pref[SettingsKeys.HIGHLIGHTS_JSON] = encodeHighlights(highlights.sortedByDescending { it.createdAt })
+        }
+    }
+
+    override suspend fun replaceHighlights(highlights: List<Highlight>) {
+        dataStore.edit { pref ->
+            pref[SettingsKeys.HIGHLIGHTS_JSON] = encodeHighlights(highlights.sortedByDescending { it.createdAt })
+        }
+    }
+
+    override suspend fun deleteHighlight(highlightId: String) {
+        if (highlightId.isBlank()) return
+        dataStore.edit { pref ->
+            val highlights = decodeHighlights(pref[SettingsKeys.HIGHLIGHTS_JSON].orEmpty())
+                .filterNot { it.id == highlightId }
+            pref[SettingsKeys.HIGHLIGHTS_JSON] = encodeHighlights(highlights)
         }
     }
 
@@ -330,6 +371,12 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun replaceReadHistory(history: Map<String, Int>) {
+        dataStore.edit { pref ->
+            pref[SettingsKeys.READ_HISTORY_JSON] = encodeReadHistory(trimReadHistory(history))
+        }
+    }
+
     override suspend fun updateLastBackupPath(path: String) {
         dataStore.edit { it[SettingsKeys.LAST_BACKUP_PATH] = path }
     }
@@ -406,6 +453,51 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
         return arr.toString()
     }
 
+    private fun decodeHighlights(raw: String): List<Highlight> {
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val id = item.optString("id")
+                    val bookId = item.optString("bookId")
+                    if (id.isBlank() || bookId.isBlank()) continue
+                    add(
+                        Highlight(
+                            id = id,
+                            bookId = bookId,
+                            startChar = item.optInt("startChar", 0),
+                            endChar = item.optInt("endChar", 0),
+                            quote = item.optString("quote"),
+                            colorKey = item.optString("colorKey", "amber"),
+                            note = item.optString("note"),
+                            createdAt = item.optLong("createdAt", 0L),
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodeHighlights(highlights: List<Highlight>): String {
+        val arr = JSONArray()
+        highlights.forEach { highlight ->
+            arr.put(
+                JSONObject()
+                    .put("id", highlight.id)
+                    .put("bookId", highlight.bookId)
+                    .put("startChar", highlight.startChar)
+                    .put("endChar", highlight.endChar)
+                    .put("quote", highlight.quote)
+                    .put("colorKey", highlight.colorKey)
+                    .put("note", highlight.note)
+                    .put("createdAt", highlight.createdAt)
+            )
+        }
+        return arr.toString()
+    }
+
     private fun decodeVocabulary(raw: String): List<VocabularyWord> {
         if (raw.isBlank()) return emptyList()
         return runCatching {
@@ -445,6 +537,39 @@ class ReaderSettingsRepositoryImpl @Inject constructor(
             )
         }
         return arr.toString()
+    }
+
+    private fun decodeReadHistory(raw: String): Map<String, Int> {
+        if (raw.isBlank()) return emptyMap()
+        return runCatching {
+            val obj = JSONObject(raw)
+            val keys = obj.keys()
+            val out = linkedMapOf<String, Int>()
+            while (keys.hasNext()) {
+                val date = keys.next()
+                val seconds = obj.optInt(date, 0).coerceAtLeast(0)
+                if (date.isNotBlank()) out[date] = seconds
+            }
+            out
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun encodeReadHistory(history: Map<String, Int>): String {
+        val obj = JSONObject()
+        history.toSortedMap().forEach { (date, seconds) ->
+            if (date.isNotBlank() && seconds >= 0) {
+                obj.put(date, seconds)
+            }
+        }
+        return obj.toString()
+    }
+
+    private fun trimReadHistory(history: Map<String, Int>, keepDays: Int = 60): Map<String, Int> {
+        if (history.size <= keepDays) return history
+        return history.entries
+            .sortedByDescending { it.key }
+            .take(keepDays)
+            .associate { it.toPair() }
     }
 
     private fun decodeSyncConflicts(raw: String): List<SyncConflict> {

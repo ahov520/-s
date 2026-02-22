@@ -55,6 +55,7 @@ fun ReaderToolbar(
     onShowBookmarks: () -> Unit,
     onShowChapters: () -> Unit,
     onShowSearch: () -> Unit,
+    onShowHighlights: () -> Unit,
     onShowNotes: () -> Unit,
     onShowVocabulary: () -> Unit,
     onShowAi: () -> Unit,
@@ -136,6 +137,11 @@ fun ReaderToolbar(
                             icon = Icons.Default.Search,
                             label = "搜索",
                             onClick = onShowSearch,
+                        )
+                        ActionPill(
+                            icon = Icons.Default.BookmarkAdd,
+                            label = "高亮",
+                            onClick = onShowHighlights,
                         )
                         ActionPill(
                             icon = Icons.Default.EditNote,

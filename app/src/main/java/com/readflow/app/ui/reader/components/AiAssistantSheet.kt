@@ -4,8 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -18,9 +21,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 @Composable
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 fun AiAssistantSheet(
     summary: String,
+    sourceLabel: String,
+    keywords: List<String>,
     questions: List<String>,
     isGenerating: Boolean,
     onDismiss: () -> Unit,
@@ -35,7 +40,7 @@ fun AiAssistantSheet(
         ) {
             Text("AI 阅读助手（本地模式）", style = MaterialTheme.typography.titleLarge)
             Text(
-                text = "生成当前片段总结",
+                text = "生成当前章节/片段总结",
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(enabled = !isGenerating, onClick = onGenerate)
@@ -49,11 +54,32 @@ fun AiAssistantSheet(
             if (isGenerating) {
                 CircularProgressIndicator()
             }
+            if (sourceLabel.isNotBlank()) {
+                Text(
+                    text = "来源：$sourceLabel",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
                 text = if (summary.isBlank()) "点击上方按钮生成总结。"
                 else summary,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (keywords.isNotEmpty()) {
+                Text("关键词", style = MaterialTheme.typography.titleMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    keywords.forEach { keyword ->
+                        Text(
+                            text = keyword,
+                            modifier = Modifier
+                                .background(Color(0xFFEFF2F7), CircleShape)
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+            }
             if (questions.isNotEmpty()) {
                 Text("复盘问题", style = MaterialTheme.typography.titleMedium)
                 questions.forEachIndexed { index, question ->
