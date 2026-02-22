@@ -224,6 +224,7 @@ fun ShelfScreen(
                     },
                     onGoalChange = viewModel::updateDailyGoalMinutes,
                     onReminderChange = viewModel::updateReminder,
+                    onApplySmartReminder = viewModel::applySmartReminderTime,
                     onRestoreModeChange = viewModel::updateRestoreMode,
                     onCloudProviderChange = viewModel::updateCloudProvider,
                     onCloudWebDavConfigChange = viewModel::updateCloudWebDavConfig,
@@ -612,6 +613,7 @@ private fun ProfileTab(
     onImport: () -> Unit,
     onGoalChange: (Int) -> Unit,
     onReminderChange: (Boolean, Int, Int) -> Unit,
+    onApplySmartReminder: () -> Unit,
     onRestoreModeChange: (BackupAndSyncUseCase.RestoreMode) -> Unit,
     onCloudProviderChange: (CloudSyncProvider) -> Unit,
     onCloudWebDavConfigChange: (String, String, String) -> Unit,
@@ -789,6 +791,11 @@ private fun ProfileTab(
                         )
                     }
                 }
+                FilterChip(
+                    selected = false,
+                    onClick = onApplySmartReminder,
+                    label = { Text("智能推荐提醒时间") },
+                )
                 Text("累计笔记：$notesCount 条", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("生词收藏：$vocabularyCount 条", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

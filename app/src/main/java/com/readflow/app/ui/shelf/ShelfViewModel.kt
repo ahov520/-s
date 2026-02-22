@@ -20,6 +20,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.Instant
+import java.time.ZoneId
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -203,6 +205,43 @@ class ShelfViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.updateReminder(enabled, hour, minute)
             ensureReminderScheduled(enabled, hour, minute)
+        }
+    }
+
+    fun applySmartReminderTime() {
+        viewModelScope.launch {
+            val zoneId = ZoneId.systemDefault()
+            val now = System.currentTimeMillis()
+            val cutoff = now - 30L * 24 * 60 * 60 * 1000
+            val hourBuckets = IntArray(24)
+
+            _uiState.value.books
+                .asSequence()
+                .mapNotNull { it.lastReadAt }
+                .filter { it >= cutoff }
+                .forEach { timestamp ->
+                    val hour = Instant.ofEpochMilli(timestamp).atZone(zoneId).hour
+                    hourBuckets[hour] += 1
+                }
+
+            val recommendedHour = hourBuckets
+                .indices
+                .maxByOrNull { hourBuckets[it] }
+                ?.takeIf { hourBuckets[it] > 0 }
+                ?: latestSettingsSnapshot.reminderHour.coerceIn(0, 23)
+            val minute = latestSettingsSnapshot.reminderMinute.coerceIn(0, 59)
+            val enabled = latestSettingsSnapshot.reminderEnabled
+            settingsRepository.updateReminder(enabled = enabled, hour = recommendedHour, minute = minute)
+            ensureReminderScheduled(enabled = enabled, hour = recommendedHour, minute = minute)
+
+            val hourText = recommendedHour.toString().padStart(2, '0')
+            val minuteText = minute.toString().padStart(2, '0')
+            val message = if (hourBuckets[recommendedHour] > 0) {
+                "已根据最近阅读习惯推荐提醒时间：$hourText:$minuteText"
+            } else {
+                "最近阅读记录不足，已保持提醒时间：$hourText:$minuteText"
+            }
+            _uiState.update { it.copy(message = message) }
         }
     }
 
