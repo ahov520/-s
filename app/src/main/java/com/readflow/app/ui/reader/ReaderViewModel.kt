@@ -977,7 +977,7 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun summarizeSnippet(snippet: String): Pair<Pair<String, List<String>>, List<String>> {
-        if (snippet.isBlank()) return ("当前片段暂无可总结内容。" to emptyList()) to emptyList()
+        if (snippet.isBlank()) return ("当前片段暂无可总结内容。" to emptyList<String>()) to emptyList<String>()
         val normalized = snippet
             .replace("\r", "")
             .replace(Regex("\\s+"), " ")
